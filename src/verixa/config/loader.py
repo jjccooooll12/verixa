@@ -13,6 +13,7 @@ from verixa.contracts.models import (
     BaselineConfig,
     CheckConfig,
     FreshnessConfig,
+    NumericDistributionChangeThresholds,
     NoNullsTest,
     NullRateChangeThresholds,
     ProjectConfig,
@@ -185,14 +186,18 @@ def _parse_baseline(raw_baseline: Any) -> BaselineConfig:
         raise NormalizationError("baseline must be a mapping when provided.")
 
     warning_age = raw_baseline.get("warning_age", BaselineConfig().warning_age)
+    path = raw_baseline.get("path", BaselineConfig().path)
+    if not isinstance(path, str) or not path.strip():
+        raise NormalizationError("baseline.path must be a non-empty string when provided.")
     if warning_age is None:
-        return BaselineConfig(warning_age=None, warning_age_seconds=None)
+        return BaselineConfig(warning_age=None, warning_age_seconds=None, path=path)
     if not isinstance(warning_age, str) or not warning_age:
         raise NormalizationError("baseline.warning_age must be a non-empty string or null.")
 
     return BaselineConfig(
         warning_age=warning_age,
         warning_age_seconds=parse_duration_to_seconds(warning_age),
+        path=path,
     )
 
 
@@ -232,6 +237,9 @@ def _parse_rules(
     raw_row_count = raw_rules.get("row_count_change", {})
     if not isinstance(raw_row_count, dict):
         raise NormalizationError(f"{prefix}.row_count_change must be a mapping.")
+    raw_numeric_distribution = raw_rules.get("numeric_distribution_change", {})
+    if not isinstance(raw_numeric_distribution, dict):
+        raise NormalizationError(f"{prefix}.numeric_distribution_change must be a mapping.")
 
     null_rate = NullRateChangeThresholds(
         warning_delta=_parse_fraction(
@@ -291,7 +299,39 @@ def _parse_rules(
             f"{prefix}.row_count_change.error_growth_ratio must be greater than or equal to warning_growth_ratio."
         )
 
-    return RulesConfig(null_rate_change=null_rate, row_count_change=row_count)
+    numeric_distribution = NumericDistributionChangeThresholds(
+        warning_relative_delta=_parse_non_negative_number(
+            raw_numeric_distribution.get(
+                "warning_relative_delta",
+                resolved_defaults.numeric_distribution_change.warning_relative_delta,
+            ),
+            f"{prefix}.numeric_distribution_change.warning_relative_delta",
+        ),
+        error_relative_delta=_parse_non_negative_number(
+            raw_numeric_distribution.get(
+                "error_relative_delta",
+                resolved_defaults.numeric_distribution_change.error_relative_delta,
+            ),
+            f"{prefix}.numeric_distribution_change.error_relative_delta",
+        ),
+        minimum_baseline_value=_parse_non_negative_number(
+            raw_numeric_distribution.get(
+                "minimum_baseline_value",
+                resolved_defaults.numeric_distribution_change.minimum_baseline_value,
+            ),
+            f"{prefix}.numeric_distribution_change.minimum_baseline_value",
+        ),
+    )
+    if numeric_distribution.error_relative_delta < numeric_distribution.warning_relative_delta:
+        raise NormalizationError(
+            f"{prefix}.numeric_distribution_change.error_relative_delta must be greater than or equal to warning_relative_delta."
+        )
+
+    return RulesConfig(
+        null_rate_change=null_rate,
+        row_count_change=row_count,
+        numeric_distribution_change=numeric_distribution,
+    )
 
 
 def _parse_freshness(

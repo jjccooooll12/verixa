@@ -9,7 +9,12 @@ from pathlib import Path
 from verixa.config.errors import ConfigError
 from verixa.config.loader import load_config, resolve_config_path
 from verixa.connectors.bigquery.connector import BigQueryConnector
-from verixa.storage.filesystem import SnapshotStore, StorageError
+from verixa.storage.filesystem import (
+    SnapshotStore,
+    StorageError,
+    create_snapshot_store,
+    resolve_environment_name,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -17,6 +22,7 @@ class StatusReport:
     config_path: Path
     config_exists: bool
     config_error: str | None
+    environment: str | None
     baseline_path: Path
     baseline_exists: bool
     baseline_age_seconds: int | None
@@ -32,13 +38,16 @@ def run_status(
     config_path: Path | None = None,
     *,
     source_names: tuple[str, ...] = (),
+    environment: str | None = None,
 ) -> StatusReport:
     resolved_config_path = resolve_config_path(config_path)
-    store = SnapshotStore()
+    store: SnapshotStore | None = SnapshotStore()
     existing_baseline_path = store.existing_baseline_path()
+    active_environment = resolve_environment_name(environment)
 
     config_exists = resolved_config_path.exists()
     config_error: str | None = None
+    baseline_error: str | None = None
     auth_ok: bool | None = None
     auth_message: str | None = None
     warehouse_label: str | None = None
@@ -51,6 +60,17 @@ def run_status(
         except ConfigError as exc:
             config_error = str(exc)
         else:
+            existing_baseline_path = Path(config.baseline.path)
+            try:
+                store = create_snapshot_store(
+                    config.baseline.path,
+                    environment=active_environment,
+                )
+            except StorageError as exc:
+                baseline_error = str(exc)
+                store = None
+            else:
+                existing_baseline_path = store.existing_baseline_path()
             warehouse_label = config.warehouse.kind
             if config.warehouse.project:
                 warehouse_label += f" ({config.warehouse.project})"
@@ -62,10 +82,9 @@ def run_status(
         warehouse_max_bytes_billed = None
         config_error = f"Config file '{resolved_config_path}' was not found."
 
-    baseline_exists = store.baseline_exists()
+    baseline_exists = store.baseline_exists() if store is not None else False
     baseline_age_seconds: int | None = None
-    baseline_error: str | None = None
-    if baseline_exists:
+    if baseline_exists and store is not None:
         try:
             snapshot = store.read_baseline()
         except StorageError as exc:
@@ -79,6 +98,7 @@ def run_status(
         config_path=resolved_config_path,
         config_exists=config_exists,
         config_error=config_error,
+        environment=active_environment,
         baseline_path=existing_baseline_path,
         baseline_exists=baseline_exists,
         baseline_age_seconds=baseline_age_seconds,

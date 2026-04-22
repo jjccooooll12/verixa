@@ -21,9 +21,14 @@ rules:
     error_drop_ratio: 0.40
     warning_growth_ratio: 0.25
     error_growth_ratio: 1.50
+  numeric_distribution_change:
+    warning_relative_delta: 0.25
+    error_relative_delta: 0.50
+    minimum_baseline_value: 1.0
 
 baseline:
   warning_age: 168h
+  path: .verixa/baseline.json
 
 sources:
   stripe.transactions:
@@ -67,6 +72,9 @@ DEFAULT_TARGETS_CONFIG = """paths:
     - stripe.transactions
   macros/shared/:
     - stripe.transactions
+
+dbt:
+  manifest_path: target/manifest.json
 """
 
 

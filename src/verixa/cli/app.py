@@ -111,6 +111,11 @@ def create_app(deps: AppDeps | None = None) -> typer.Typer:
             "--source",
             help="Limit the command to one or more source names. Repeat to select multiple.",
         ),
+        environment: str | None = typer.Option(
+            None,
+            "--environment",
+            help="Select a baseline environment when baseline.path uses {environment} or {env}. Falls back to VERIXA_ENV.",
+        ),
         output: OutputFormat = typer.Option(
             OutputFormat.TEXT,
             "--format",
@@ -163,6 +168,7 @@ def create_app(deps: AppDeps | None = None) -> typer.Typer:
             snapshot, baseline_path = active_deps.run_snapshot(
                 config,
                 source_names=selected_sources,
+                environment=environment,
                 max_bytes_billed=parsed_max_bytes_billed,
             )
             typer.echo(_render_snapshot_output(snapshot, baseline_path, output, estimates))
@@ -180,6 +186,11 @@ def create_app(deps: AppDeps | None = None) -> typer.Typer:
             None,
             "--source",
             help="Limit the command to one or more source names. Repeat to select multiple.",
+        ),
+        environment: str | None = typer.Option(
+            None,
+            "--environment",
+            help="Select a baseline environment when baseline.path uses {environment} or {env}. Falls back to VERIXA_ENV.",
         ),
         output: OutputFormat = typer.Option(
             OutputFormat.TEXT,
@@ -220,6 +231,7 @@ def create_app(deps: AppDeps | None = None) -> typer.Typer:
             config=config,
             risk_config=risk_config,
             source=source,
+            environment=environment,
             changed_file=changed_file,
             changed_against=changed_against,
             targets_config=targets_config,
@@ -233,6 +245,7 @@ def create_app(deps: AppDeps | None = None) -> typer.Typer:
         config: Path = typer.Option(Path("verixa.yaml"), help="Path to verixa.yaml."),
         risk_config: Path | None = typer.Option(Path("verixa.risk.yaml")),
         source: list[str] | None = typer.Option(None, "--source"),
+        environment: str | None = typer.Option(None, "--environment"),
         output: OutputFormat = typer.Option(OutputFormat.TEXT, "--format"),
         changed_file: list[str] | None = typer.Option(None, "--changed-file"),
         changed_against: str | None = typer.Option(None, "--changed-against"),
@@ -248,6 +261,7 @@ def create_app(deps: AppDeps | None = None) -> typer.Typer:
             config=config,
             risk_config=risk_config,
             source=source,
+            environment=environment,
             changed_file=changed_file,
             changed_against=changed_against,
             targets_config=targets_config,
@@ -365,6 +379,11 @@ def create_app(deps: AppDeps | None = None) -> typer.Typer:
             "--fail-on-warning",
             help="Exit with status 1 when any warning-severity findings exist.",
         ),
+        environment: str | None = typer.Option(
+            None,
+            "--environment",
+            help="Select a baseline environment when baseline.path uses {environment} or {env}. Falls back to VERIXA_ENV.",
+        ),
         output: OutputFormat = typer.Option(
             OutputFormat.TEXT,
             "--format",
@@ -418,6 +437,7 @@ def create_app(deps: AppDeps | None = None) -> typer.Typer:
                 config,
                 risk_path=risk_config,
                 source_names=selected_sources,
+                environment=environment,
                 max_bytes_billed=parsed_max_bytes_billed,
             )
             typer.echo(_render_diff_output(result, "Check", output, estimates))
@@ -443,12 +463,21 @@ def create_app(deps: AppDeps | None = None) -> typer.Typer:
             "--source",
             help="Optionally limit status to one or more source names.",
         ),
+        environment: str | None = typer.Option(
+            None,
+            "--environment",
+            help="Select a baseline environment when baseline.path uses {environment} or {env}. Falls back to VERIXA_ENV.",
+        ),
         output: OutputFormat = typer.Option(OutputFormat.TEXT, "--format", help="Output format."),
     ) -> None:
         """Show config, baseline, auth, and source status."""
 
         try:
-            report = active_deps.run_status(config, source_names=tuple(source or ()))
+            report = active_deps.run_status(
+                config,
+                source_names=tuple(source or ()),
+                environment=environment,
+            )
             typer.echo(_render_status_output(report, output))
         except (ConfigError, ConnectorError, StorageError) as exc:
             _exit_with_error(str(exc), output)
@@ -461,12 +490,21 @@ def create_app(deps: AppDeps | None = None) -> typer.Typer:
             "--source",
             help="Optionally limit diagnostics to one or more source names.",
         ),
+        environment: str | None = typer.Option(
+            None,
+            "--environment",
+            help="Select a baseline environment when baseline.path uses {environment} or {env}. Falls back to VERIXA_ENV.",
+        ),
         output: OutputFormat = typer.Option(OutputFormat.TEXT, "--format", help="Output format."),
     ) -> None:
         """Run diagnostics for config, auth, baseline, and source access."""
 
         try:
-            result = active_deps.run_doctor(config, source_names=tuple(source or ()))
+            result = active_deps.run_doctor(
+                config,
+                source_names=tuple(source or ()),
+                environment=environment,
+            )
             typer.echo(_render_diff_output(result, "Doctor", output))
         except (ConfigError, ConnectorError, StorageError) as exc:
             _exit_with_error(str(exc), output)
@@ -555,6 +593,7 @@ def _run_diff_like_command(
     config: Path,
     risk_config: Path | None,
     source: list[str] | None,
+    environment: str | None,
     changed_file: list[str] | None,
     changed_against: str | None,
     targets_config: Path | None,
@@ -582,6 +621,7 @@ def _run_diff_like_command(
             config,
             risk_path=risk_config,
             source_names=selected_sources,
+            environment=environment,
             max_bytes_billed=parsed_max_bytes_billed,
         )
         typer.echo(_render_diff_output(result, "Diff", output, estimates))
@@ -682,6 +722,7 @@ def _render_status_output(report: StatusReport, output: OutputFormat) -> str:
             "exists": report.config_exists,
             "error": report.config_error,
         },
+        "environment": report.environment,
         "baseline": {
             "path": str(report.baseline_path),
             "exists": report.baseline_exists,
@@ -704,6 +745,11 @@ def _render_status_output(report: StatusReport, output: OutputFormat) -> str:
     if report.config_error is not None and report.config_exists:
         config_line = f"- Config: ERROR {report.config_error}"
     lines.append(config_line)
+
+    if report.environment is None:
+        lines.append("- Environment: default")
+    else:
+        lines.append(f"- Environment: {report.environment}")
 
     baseline_state = "OK" if report.baseline_exists and report.baseline_error is None else "MISSING"
     if report.baseline_error is not None:
@@ -782,6 +828,12 @@ def _render_explain_output(payload: dict[str, Any], output: OutputFormat) -> str
         f"drop_error={payload['rules']['row_count_change']['error_drop_ratio']}, "
         f"growth_warning={payload['rules']['row_count_change']['warning_growth_ratio']}, "
         f"growth_error={payload['rules']['row_count_change']['error_growth_ratio']}"
+    )
+    lines.append(
+        "- numeric_distribution_change: "
+        f"warning={payload['rules']['numeric_distribution_change']['warning_relative_delta']}, "
+        f"error={payload['rules']['numeric_distribution_change']['error_relative_delta']}, "
+        f"baseline_min={payload['rules']['numeric_distribution_change']['minimum_baseline_value']}"
     )
     return "\n".join(lines)
 

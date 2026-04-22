@@ -29,6 +29,7 @@ _TYPE_ALIASES = {
 _DURATION_RE = re.compile(r"^<?\s*(\d+)\s*([smhd])\s*$", re.IGNORECASE)
 _BYTE_SIZE_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([kmgt]?b)?\s*$", re.IGNORECASE)
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_NUMERIC_TYPES = {"INT64", "FLOAT64", "NUMERIC", "BIGNUMERIC"}
 
 
 class NormalizationError(ValueError):
@@ -40,6 +41,12 @@ def normalize_type_name(type_name: str) -> str:
 
     normalized = type_name.strip().lower()
     return _TYPE_ALIASES.get(normalized, type_name.strip().upper())
+
+
+def is_numeric_type(type_name: str) -> bool:
+    """Whether a normalized warehouse type is numeric enough for summary stats."""
+
+    return normalize_type_name(type_name) in _NUMERIC_TYPES
 
 
 def parse_duration_to_seconds(raw_value: str) -> int:

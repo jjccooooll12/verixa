@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from pathlib import Path, PurePosixPath
 import subprocess
 from typing import Any, Callable
@@ -21,6 +22,7 @@ class TargetsConfig:
     """Path-pattern to source-name mappings used for CI targeting."""
 
     paths: dict[str, tuple[str, ...]]
+    dbt_manifest_path: Path | None = None
 
 
 ConfigLoader = Callable[[Path | None], ProjectConfig]
@@ -62,7 +64,9 @@ def load_targets_config(path: Path | None = None) -> TargetsConfig | None:
         sources = _parse_target_sources(pattern, raw_sources)
         paths[_normalize_pattern(pattern)] = sources
 
-    return TargetsConfig(paths=paths)
+    dbt_manifest_path = _parse_dbt_manifest_path(payload.get("dbt"), targets_path)
+
+    return TargetsConfig(paths=paths, dbt_manifest_path=dbt_manifest_path)
 
 
 def resolve_source_names(
@@ -118,7 +122,20 @@ def resolve_source_names(
         targets_config=targets_config,
         available_source_names=tuple(config.sources),
     )
-    return matched_sources
+    if targets_config.dbt_manifest_path is None:
+        return matched_sources
+
+    dbt_matches = _match_dbt_source_names(
+        changed_files=candidate_files,
+        manifest_path=targets_config.dbt_manifest_path,
+        config=config,
+    )
+    if not matched_sources:
+        return dbt_matches
+
+    union = set(matched_sources)
+    union.update(dbt_matches)
+    return tuple(source_name for source_name in config.sources if source_name in union)
 
 
 def list_changed_files_against(base_ref: str, *, cwd: Path) -> tuple[str, ...]:
@@ -177,6 +194,22 @@ def _parse_target_sources(pattern: str, raw_sources: Any) -> tuple[str, ...]:
     return tuple(dict.fromkeys(sources))
 
 
+def _parse_dbt_manifest_path(raw_dbt: Any, targets_path: Path) -> Path | None:
+    if raw_dbt is None:
+        return None
+    if not isinstance(raw_dbt, dict):
+        raise ConfigError("Targets config 'dbt' must be a mapping when provided.")
+
+    raw_manifest_path = raw_dbt.get("manifest_path", "target/manifest.json")
+    if not isinstance(raw_manifest_path, str) or not raw_manifest_path.strip():
+        raise ConfigError("Targets config dbt.manifest_path must be a non-empty string.")
+
+    manifest_path = Path(raw_manifest_path)
+    if not manifest_path.is_absolute():
+        manifest_path = (targets_path.parent / manifest_path).resolve()
+    return manifest_path
+
+
 def _validate_target_sources(
     targets_config: TargetsConfig,
     available_source_names: tuple[str, ...],
@@ -210,6 +243,189 @@ def _match_source_names(
     if not matched:
         return ()
     return tuple(source_name for source_name in available_source_names if source_name in matched)
+
+
+def _match_dbt_source_names(
+    *,
+    changed_files: tuple[str, ...],
+    manifest_path: Path,
+    config: ProjectConfig,
+) -> tuple[str, ...]:
+    manifest = _load_dbt_manifest(manifest_path)
+    changed_node_ids = _changed_dbt_node_ids(changed_files, manifest)
+    if not changed_node_ids:
+        return ()
+
+    verixa_source_lookup = _build_verixa_source_lookup(config)
+    matched: set[str] = set()
+    for node_id in changed_node_ids:
+        for source_id in _collect_upstream_source_ids(node_id, manifest):
+            source_node = manifest["sources"].get(source_id)
+            if not isinstance(source_node, dict):
+                continue
+            for table_key in _dbt_source_table_keys(source_node):
+                matched.update(verixa_source_lookup.get(table_key, ()))
+
+    if not matched:
+        return ()
+    return tuple(source_name for source_name in config.sources if source_name in matched)
+
+
+def _load_dbt_manifest(manifest_path: Path) -> dict[str, Any]:
+    if not manifest_path.exists():
+        raise ConfigError(
+            f"dbt manifest '{manifest_path}' was not found. "
+            "Update verixa.targets.yaml or generate dbt artifacts first."
+        )
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ConfigError(
+            f"Failed to parse dbt manifest JSON from '{manifest_path}': {exc}"
+        ) from exc
+
+    if not isinstance(payload, dict):
+        raise ConfigError("dbt manifest must be a JSON object.")
+
+    nodes = payload.get("nodes", {})
+    sources = payload.get("sources", {})
+    macros = payload.get("macros", {})
+    if not isinstance(nodes, dict) or not isinstance(sources, dict) or not isinstance(macros, dict):
+        raise ConfigError("dbt manifest must contain object-valued 'nodes', 'sources', and 'macros' sections.")
+
+    return {
+        "nodes": nodes,
+        "sources": sources,
+        "macros": macros,
+    }
+
+
+def _changed_dbt_node_ids(
+    changed_files: tuple[str, ...],
+    manifest: dict[str, Any],
+) -> set[str]:
+    changed = set(changed_files)
+    nodes_by_id = {
+        **manifest["nodes"],
+        **manifest["sources"],
+        **manifest["macros"],
+    }
+
+    changed_node_ids = {
+        unique_id
+        for unique_id, node in nodes_by_id.items()
+        if _dbt_node_matches_changed_files(node, changed)
+    }
+
+    changed_macro_ids = {
+        unique_id
+        for unique_id in changed_node_ids
+        if unique_id.startswith("macro.")
+    }
+    if not changed_macro_ids:
+        return changed_node_ids
+
+    for unique_id, node in manifest["nodes"].items():
+        depends_on = node.get("depends_on", {})
+        macro_ids = depends_on.get("macros", ())
+        if any(macro_id in changed_macro_ids for macro_id in macro_ids):
+            changed_node_ids.add(unique_id)
+    return changed_node_ids
+
+
+def _dbt_node_matches_changed_files(node: Any, changed_files: set[str]) -> bool:
+    if not isinstance(node, dict):
+        return False
+
+    candidate_paths = {
+        _normalize_optional_path(node.get("original_file_path")),
+        _normalize_optional_path(node.get("path")),
+        _normalize_optional_path(node.get("patch_path")),
+    }
+    candidate_paths.discard(None)
+    return any(path in changed_files for path in candidate_paths)
+
+
+def _build_verixa_source_lookup(config: ProjectConfig) -> dict[str, tuple[str, ...]]:
+    lookup: dict[str, list[str]] = {}
+    for source_name, source in config.sources.items():
+        for table_key in _verixa_table_keys(config, source.table):
+            lookup.setdefault(table_key, []).append(source_name)
+    return {
+        table_key: tuple(dict.fromkeys(source_names))
+        for table_key, source_names in sorted(lookup.items())
+    }
+
+
+def _verixa_table_keys(config: ProjectConfig, table: str) -> tuple[str, ...]:
+    parts = [part.strip().lower() for part in table.split(".") if part.strip()]
+    if len(parts) == 2:
+        dataset, identifier = parts
+        values = [f"{dataset}.{identifier}"]
+        if config.warehouse.project:
+            values.append(f"{config.warehouse.project.lower()}.{dataset}.{identifier}")
+        return tuple(dict.fromkeys(values))
+    if len(parts) == 3:
+        project, dataset, identifier = parts
+        return (f"{project}.{dataset}.{identifier}", f"{dataset}.{identifier}")
+    return (".".join(parts),)
+
+
+def _dbt_source_table_keys(node: dict[str, Any]) -> tuple[str, ...]:
+    database = _normalize_optional_path(node.get("database"))
+    schema = _normalize_optional_path(node.get("schema"))
+    identifier = _normalize_optional_path(node.get("identifier"))
+    name = _normalize_optional_path(node.get("name"))
+
+    identifiers = [value for value in (identifier, name) if value]
+    values: list[str] = []
+    for resolved_identifier in identifiers:
+        if schema:
+            values.append(f"{schema}.{resolved_identifier}")
+        if database and schema:
+            values.append(f"{database}.{schema}.{resolved_identifier}")
+    return tuple(dict.fromkeys(values))
+
+
+def _collect_upstream_source_ids(
+    node_id: str,
+    manifest: dict[str, Any],
+) -> tuple[str, ...]:
+    seen: set[str] = set()
+    source_ids: set[str] = set()
+    nodes_by_id = {
+        **manifest["nodes"],
+        **manifest["sources"],
+    }
+
+    def _walk(current_id: str) -> None:
+        if current_id in seen:
+            return
+        seen.add(current_id)
+        if current_id.startswith("source."):
+            source_ids.add(current_id)
+            return
+        node = nodes_by_id.get(current_id)
+        if not isinstance(node, dict):
+            return
+        depends_on = node.get("depends_on", {})
+        for dependency_id in depends_on.get("nodes", ()):
+            if isinstance(dependency_id, str):
+                _walk(dependency_id)
+
+    _walk(node_id)
+    return tuple(sorted(source_ids))
+
+
+def _normalize_optional_path(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().replace("\\", "/")
+    if not normalized:
+        return None
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    return normalized.lower()
 
 
 def _normalize_changed_files(changed_files: tuple[str, ...] | list[str]) -> tuple[str, ...]:

@@ -23,7 +23,8 @@ def render_snapshot_summary(
     for source_name, source in sorted(snapshot.sources.items()):
         lines.append(
             f"- {source_name}: {source.row_count if source.row_count is not None else 'unknown'} rows, "
-            f"{len(source.schema)} columns"
+            f"{len(source.schema)} columns, "
+            f"{len(source.numeric_summaries)} numeric summaries"
         )
     if estimated_bytes_by_source is not None:
         lines.append(f"Estimated scan: {_format_total_bytes(estimated_bytes_by_source)}")

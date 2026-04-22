@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
 
@@ -26,6 +26,18 @@ class FreshnessSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class NumericSummarySnapshot:
+    """Lightweight numeric distribution summary for one column."""
+
+    column: str
+    min_value: float | None
+    p50_value: float | None
+    p95_value: float | None
+    max_value: float | None
+    mean_value: float | None
+
+
+@dataclass(frozen=True, slots=True)
 class SourceSnapshot:
     """Observed state for a single source at one point in time."""
 
@@ -37,6 +49,7 @@ class SourceSnapshot:
     freshness: FreshnessSnapshot | None
     accepted_values: dict[str, AcceptedValuesSnapshot]
     captured_at: datetime
+    numeric_summaries: dict[str, NumericSummarySnapshot] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)

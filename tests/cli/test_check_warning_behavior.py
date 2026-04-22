@@ -9,7 +9,7 @@ from verixa.diff.models import DiffResult, Finding
 def test_check_command_does_not_fail_on_warning_only_results() -> None:
     runner = CliRunner()
     app = build_app(
-        run_check=lambda config, risk_path=None, source_names=(), max_bytes_billed=None: DiffResult(
+        run_check=lambda config, risk_path=None, source_names=(), environment=None, max_bytes_billed=None: DiffResult(
             findings=(
                 Finding(
                     source_name="stripe.transactions",
@@ -32,7 +32,7 @@ def test_check_command_does_not_fail_on_warning_only_results() -> None:
 def test_check_command_can_fail_on_warning_when_requested() -> None:
     runner = CliRunner()
     app = build_app(
-        run_check=lambda config, risk_path=None, source_names=(), max_bytes_billed=None: DiffResult(
+        run_check=lambda config, risk_path=None, source_names=(), environment=None, max_bytes_billed=None: DiffResult(
             findings=(
                 Finding(
                     source_name="stripe.transactions",
@@ -54,7 +54,7 @@ def test_check_command_can_fail_on_warning_when_requested() -> None:
 def test_check_command_fails_when_warning_policy_sources_exist() -> None:
     runner = CliRunner()
     app = build_app(
-        run_check=lambda config, risk_path=None, source_names=(), max_bytes_billed=None: DiffResult(
+        run_check=lambda config, risk_path=None, source_names=(), environment=None, max_bytes_billed=None: DiffResult(
             findings=(
                 Finding(
                     source_name="stripe.transactions",
@@ -77,7 +77,7 @@ def test_check_command_fails_when_warning_policy_sources_exist() -> None:
 def test_check_command_can_emit_json_output() -> None:
     runner = CliRunner()
     app = build_app(
-        run_check=lambda config, risk_path=None, source_names=(), max_bytes_billed=None: DiffResult(
+        run_check=lambda config, risk_path=None, source_names=(), environment=None, max_bytes_billed=None: DiffResult(
             findings=(
                 Finding(
                     source_name="stripe.transactions",

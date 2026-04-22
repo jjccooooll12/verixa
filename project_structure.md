@@ -114,6 +114,14 @@ These are created by the CLI at runtime rather than committed by default.
 `-- baseline.json
 ```
 
+When `baseline.path` uses `{environment}` or `{env}`, runtime paths can also look like:
+
+```text
+.verixa/
+`-- prod/
+    `-- baseline.json
+```
+
 ## Public Package Layout
 Public branding and entrypoints are Verixa.
 
@@ -152,6 +160,7 @@ Responsibilities:
 - merge source-level rule overrides on top of project defaults
 - return clear errors for invalid config
 - prefer Verixa default paths for new projects
+- parse environment-aware baseline path templates
 - load optional changed-file targeting mappings from `verixa.targets.yaml`
 
 ### `contracts/`
@@ -161,6 +170,15 @@ Responsibilities:
 - represent sources, schema fields, freshness rules, test definitions, scan windows, warning policies, and threshold configuration
 - normalize input forms into one internal representation
 - provide stable domain types for the rest of the package
+
+### `targeting.py`
+Changed-file source targeting for CI-oriented runs.
+
+Responsibilities:
+- load optional manual path-to-source mappings from `verixa.targets.yaml`
+- integrate optional dbt manifest lineage for changed-file targeting
+- normalize changed repo paths and git-diff output
+- keep changed-file source resolution separate from core diff logic
 
 ### `connectors/`
 Warehouse integration boundary.
@@ -199,6 +217,7 @@ Responsibilities:
 - read and write baseline files
 - guarantee deterministic JSON serialization
 - merge targeted snapshot updates into an existing baseline
+- resolve environment-aware baseline paths for baseline-aware commands
 - keep file layout simple and inspectable
 
 ### `rules/`

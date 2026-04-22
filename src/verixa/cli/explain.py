@@ -61,6 +61,11 @@ def run_explain(config_path: Path, source_name: str) -> dict[str, Any]:
                 "warning_growth_ratio": source.rules.row_count_change.warning_growth_ratio,
                 "error_growth_ratio": source.rules.row_count_change.error_growth_ratio,
             },
+            "numeric_distribution_change": {
+                "warning_relative_delta": source.rules.numeric_distribution_change.warning_relative_delta,
+                "error_relative_delta": source.rules.numeric_distribution_change.error_relative_delta,
+                "minimum_baseline_value": source.rules.numeric_distribution_change.minimum_baseline_value,
+            },
         },
         "tests": tests,
     }

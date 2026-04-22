@@ -71,6 +71,7 @@ Build a local-first, developer-first Data CI CLI for BigQuery source tables that
 - [x] Add common CLI options for config path and output behavior.
 - [x] Add repeatable `--source` filtering for targeted runs.
 - [x] Add automatic changed-file to source targeting for CI-oriented runs.
+- [x] Add optional `--environment` selection for baseline-aware commands.
 - [x] Add optional `--estimate-bytes` dry-run query estimates.
 - [x] Add `--fail-on-warning` for stricter CI behavior.
 - [x] Add consistent error handling and non-zero exit behavior.
@@ -98,10 +99,12 @@ Build a local-first, developer-first Data CI CLI for BigQuery source tables that
 - [x] Implement snapshot capture service.
 - [x] Capture multiple sources in parallel with conservative defaults.
 - [x] Limit queries to declared or required columns.
+- [x] Capture lightweight numeric distribution summaries for declared numeric columns.
 - [x] Store baseline snapshot locally under `.verixa/`.
 - [x] Use deterministic JSON serialization.
 - [x] Implement snapshot read/write helpers.
 - [x] Merge targeted snapshot refreshes into an existing baseline.
+- [x] Support environment-specific baseline paths.
 - [x] Handle missing baseline state gracefully.
 - [x] Keep baseline storage under `.verixa/` only.
 - [x] Decide whether to include timestamps and run metadata in stored snapshots.
@@ -115,6 +118,7 @@ Build a local-first, developer-first Data CI CLI for BigQuery source tables that
 - [x] Define default threshold semantics for null-rate spikes.
 - [x] Implement row-count change rule.
 - [x] Define default row-count change thresholds.
+- [x] Implement numeric distribution drift rule for stored p50/p95 summaries.
 - [x] Implement freshness SLA rule.
 - [x] Implement accepted-values rule.
 - [x] Implement `no_nulls` rule.
@@ -145,6 +149,7 @@ Build a local-first, developer-first Data CI CLI for BigQuery source tables that
 - [x] Add machine-readable JSON output for snapshot, validate, diff, check, status, explain, and cost.
 - [x] Add machine-readable JSON runtime errors.
 - [x] Expose baseline age, auth status, and configured sources through `verixa status`.
+- [x] Expose the active baseline environment through `verixa status`.
 - [x] Expose configured `max_bytes_billed` through status, explain, and cost output.
 - [x] Expose config, baseline, auth, and source-access diagnostics through `verixa doctor`.
 
@@ -184,6 +189,8 @@ Build a local-first, developer-first Data CI CLI for BigQuery source tables that
 - [x] Document the new hero workflow: `validate -> snapshot -> diff -> check`.
 - [x] Document `status`, `doctor`, `explain`, and `cost`.
 - [x] Document migration aliases for `plan` and `test`.
+- [x] Document environment-specific baseline paths and `--environment`.
+- [x] Document dbt-manifest-based changed-file targeting.
 
 ## Phase 12: MVP Validation
 - [x] Verify `verixa init` creates the expected files.
@@ -209,12 +216,10 @@ Build a local-first, developer-first Data CI CLI for BigQuery source tables that
 - [x] Promote `check` as the CI hero command.
 
 ## Deferred / Post-MVP
-- [ ] Numeric distribution summaries.
 - [ ] Snowflake connector.
 - [ ] Databricks connector.
-- [ ] Automatic lineage import from dbt artifacts.
+- [x] Automatic lineage import from dbt artifacts for changed-file source targeting.
 - [ ] Hosted backend or shared team state.
-- [ ] Environment-specific snapshot files.
 
 ## Remaining Gaps
 - [x] Exercise the live smoke harness against a real BigQuery project, not only in skipped mode.

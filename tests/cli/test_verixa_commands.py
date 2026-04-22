@@ -11,7 +11,7 @@ from verixa.diff.models import DiffResult, Finding
 def test_diff_command_uses_diff_title() -> None:
     runner = CliRunner()
     app = build_app(
-        run_diff=lambda config, risk_path=None, source_names=(), max_bytes_billed=None: DiffResult(
+        run_diff=lambda config, risk_path=None, source_names=(), environment=None, max_bytes_billed=None: DiffResult(
             findings=(
                 Finding(
                     source_name="stripe.transactions",
@@ -58,8 +58,9 @@ def test_plan_alias_maps_to_diff() -> None:
     runner = CliRunner()
     seen: dict[str, object] = {}
 
-    def _run_diff(config, risk_path=None, source_names=(), max_bytes_billed=None):  # noqa: ANN001
+    def _run_diff(config, risk_path=None, source_names=(), environment=None, max_bytes_billed=None):  # noqa: ANN001
         seen["called"] = True
+        seen["environment"] = environment
         return DiffResult(findings=(), sources_checked=1, used_baseline=True)
 
     app = build_app(run_diff=_run_diff)
@@ -67,6 +68,7 @@ def test_plan_alias_maps_to_diff() -> None:
 
     assert result.exit_code == 0
     assert seen["called"] is True
+    assert seen["environment"] is None
 
 
 def test_test_alias_maps_to_validate() -> None:
@@ -87,10 +89,11 @@ def test_test_alias_maps_to_validate() -> None:
 def test_status_command_renders_text() -> None:
     runner = CliRunner()
     app = build_app(
-        run_status=lambda config, source_names=(): StatusReport(
+        run_status=lambda config, source_names=(), environment=None: StatusReport(
             config_path=config,
             config_exists=True,
             config_error=None,
+            environment=environment,
             baseline_path=config.parent / ".verixa" / "baseline.json",
             baseline_exists=True,
             baseline_age_seconds=3600,
@@ -107,13 +110,14 @@ def test_status_command_renders_text() -> None:
 
     assert result.exit_code == 0
     assert "Status" in result.stdout
+    assert "Environment: default" in result.stdout
     assert "bigquery (demo)" in result.stdout
 
 
 def test_doctor_command_fails_on_errors() -> None:
     runner = CliRunner()
     app = build_app(
-        run_doctor=lambda config, source_names=(): DiffResult(
+        run_doctor=lambda config, source_names=(), environment=None: DiffResult(
             findings=(
                 Finding(
                     source_name="auth",
@@ -157,6 +161,11 @@ def test_explain_command_renders_text() -> None:
                     "warning_growth_ratio": 0.2,
                     "error_growth_ratio": 1.0,
                 },
+                "numeric_distribution_change": {
+                    "warning_relative_delta": 0.25,
+                    "error_relative_delta": 0.5,
+                    "minimum_baseline_value": 1.0,
+                },
             },
             "tests": [{"kind": "no_nulls", "column": "amount"}],
         }
@@ -167,6 +176,7 @@ def test_explain_command_renders_text() -> None:
     assert result.exit_code == 0
     assert "raw.stripe_transactions" in result.stdout
     assert "no_nulls: amount" in result.stdout
+    assert "numeric_distribution_change" in result.stdout
 
 
 def test_cost_command_renders_json() -> None:
@@ -206,8 +216,9 @@ def test_diff_command_can_target_sources_from_changed_files() -> None:
         seen["targets_path"] = targets_path
         return ("stripe.transactions",)
 
-    def _run_diff(config, risk_path=None, source_names=(), max_bytes_billed=None):  # noqa: ANN001
+    def _run_diff(config, risk_path=None, source_names=(), environment=None, max_bytes_billed=None):  # noqa: ANN001
         seen["resolved_source_names"] = source_names
+        seen["environment"] = environment
         return DiffResult(findings=(), sources_checked=1, used_baseline=True)
 
     app = build_app(resolve_source_names=_resolve_source_names, run_diff=_run_diff)
@@ -222,3 +233,19 @@ def test_diff_command_can_target_sources_from_changed_files() -> None:
     assert seen["changed_against"] is None
     assert str(seen["targets_path"]) == "verixa.targets.yaml"
     assert seen["resolved_source_names"] == ("stripe.transactions",)
+    assert seen["environment"] is None
+
+
+def test_diff_command_passes_environment() -> None:
+    runner = CliRunner()
+    seen: dict[str, object] = {}
+
+    def _run_diff(config, risk_path=None, source_names=(), environment=None, max_bytes_billed=None):  # noqa: ANN001
+        seen["environment"] = environment
+        return DiffResult(findings=(), sources_checked=1, used_baseline=True)
+
+    app = build_app(run_diff=_run_diff)
+    result = runner.invoke(app, ["diff", "--environment", "prod"])
+
+    assert result.exit_code == 0
+    assert seen["environment"] == "prod"

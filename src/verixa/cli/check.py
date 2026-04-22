@@ -13,6 +13,7 @@ def run_check(
     risk_path: Path | None = None,
     *,
     source_names: tuple[str, ...] = (),
+    environment: str | None = None,
     max_bytes_billed: int | None = None,
 ) -> DiffResult:
     """CI-friendly wrapper around plan semantics."""
@@ -21,5 +22,6 @@ def run_check(
         config_path=config_path,
         risk_path=risk_path,
         source_names=source_names,
+        environment=environment,
         max_bytes_billed=max_bytes_billed,
     )

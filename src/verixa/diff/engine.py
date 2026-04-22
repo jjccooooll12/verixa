@@ -8,6 +8,7 @@ from verixa.diff.risk import RiskConfig, SourceRiskHints
 from verixa.rules.accepted_values import check_accepted_values
 from verixa.rules.freshness import check_freshness
 from verixa.rules.no_nulls import check_no_nulls
+from verixa.rules.numeric_distribution_change import check_numeric_distribution_changes
 from verixa.rules.null_rate_change import check_null_rate_changes
 from verixa.rules.row_count_change import check_row_count_change
 from verixa.rules.schema_drift import check_schema_drift
@@ -86,6 +87,14 @@ def build_plan_result(
                 baseline,
                 current,
                 thresholds=contract.rules.row_count_change,
+            )
+        )
+        findings.extend(
+            check_numeric_distribution_changes(
+                contract,
+                baseline,
+                current,
+                thresholds=contract.rules.numeric_distribution_change,
             )
         )
 

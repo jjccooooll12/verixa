@@ -9,7 +9,7 @@ from verixa.diff.models import DiffResult, Finding
 def test_check_command_fails_when_requested_and_errors_exist() -> None:
     runner = CliRunner()
     app = build_app(
-        run_check=lambda config, risk_path=None, source_names=(), max_bytes_billed=None: DiffResult(
+        run_check=lambda config, risk_path=None, source_names=(), environment=None, max_bytes_billed=None: DiffResult(
             findings=(
                 Finding(
                     source_name="stripe.transactions",
@@ -33,7 +33,7 @@ def test_check_command_passes_source_selection() -> None:
     runner = CliRunner()
     seen: dict[str, object] = {}
 
-    def _run_check(config, risk_path=None, source_names=(), max_bytes_billed=None):  # noqa: ANN001
+    def _run_check(config, risk_path=None, source_names=(), environment=None, max_bytes_billed=None):  # noqa: ANN001
         seen["source_names"] = source_names
         seen["max_bytes_billed"] = max_bytes_billed
         return DiffResult(findings=(), sources_checked=1, used_baseline=True)
@@ -50,7 +50,7 @@ def test_check_command_can_include_estimated_bytes() -> None:
     runner = CliRunner()
     app = build_app(
         estimate_bytes=lambda config, source_names, command: {"stripe.transactions": 2048},
-        run_check=lambda config, risk_path=None, source_names=(), max_bytes_billed=None: DiffResult(
+        run_check=lambda config, risk_path=None, source_names=(), environment=None, max_bytes_billed=None: DiffResult(
             findings=(),
             sources_checked=1,
             used_baseline=True,
@@ -67,7 +67,7 @@ def test_check_command_passes_max_bytes_billed_override() -> None:
     runner = CliRunner()
     seen: dict[str, object] = {}
 
-    def _run_check(config, risk_path=None, source_names=(), max_bytes_billed=None):  # noqa: ANN001
+    def _run_check(config, risk_path=None, source_names=(), environment=None, max_bytes_billed=None):  # noqa: ANN001
         seen["max_bytes_billed"] = max_bytes_billed
         return DiffResult(findings=(), sources_checked=1, used_baseline=True)
 

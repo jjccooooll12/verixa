@@ -9,7 +9,7 @@ from verixa.storage.filesystem import StorageError
 def test_check_command_returns_runtime_error_when_baseline_is_missing() -> None:
     runner = CliRunner()
 
-    def _raise_missing_baseline(config, risk_path=None, source_names=(), max_bytes_billed=None):  # noqa: ANN001
+    def _raise_missing_baseline(config, risk_path=None, source_names=(), environment=None, max_bytes_billed=None):  # noqa: ANN001
         raise StorageError("baseline missing")
 
     app = build_app(run_check=_raise_missing_baseline)
@@ -22,7 +22,7 @@ def test_check_command_returns_runtime_error_when_baseline_is_missing() -> None:
 def test_check_command_can_emit_json_runtime_errors() -> None:
     runner = CliRunner()
 
-    def _raise_missing_baseline(config, risk_path=None, source_names=(), max_bytes_billed=None):  # noqa: ANN001
+    def _raise_missing_baseline(config, risk_path=None, source_names=(), environment=None, max_bytes_billed=None):  # noqa: ANN001
         raise StorageError("baseline missing")
 
     app = build_app(run_check=_raise_missing_baseline)

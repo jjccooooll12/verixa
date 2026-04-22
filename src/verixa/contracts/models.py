@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TypeAlias
 
+from verixa.contracts.normalize import is_numeric_type
+
 
 @dataclass(frozen=True, slots=True)
 class WarehouseConfig:
@@ -72,6 +74,15 @@ class RowCountChangeThresholds:
 
 
 @dataclass(frozen=True, slots=True)
+class NumericDistributionChangeThresholds:
+    """Thresholds for numeric summary drift findings."""
+
+    warning_relative_delta: float = 0.25
+    error_relative_delta: float = 0.50
+    minimum_baseline_value: float = 1.0
+
+
+@dataclass(frozen=True, slots=True)
 class RulesConfig:
     """Project-level heuristic thresholds."""
 
@@ -81,6 +92,9 @@ class RulesConfig:
     row_count_change: RowCountChangeThresholds = field(
         default_factory=RowCountChangeThresholds
     )
+    numeric_distribution_change: NumericDistributionChangeThresholds = field(
+        default_factory=NumericDistributionChangeThresholds
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,6 +103,7 @@ class BaselineConfig:
 
     warning_age: str | None = "168h"
     warning_age_seconds: int | None = 7 * 24 * 3600
+    path: str = ".verixa/baseline.json"
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,6 +153,15 @@ class SourceContract:
         columns.update(self.no_null_columns)
         columns.update(test.column for test in self.accepted_values_tests)
         return tuple(sorted(columns))
+
+    @property
+    def numeric_summary_columns(self) -> tuple[str, ...]:
+        columns = sorted(
+            column_name
+            for column_name, column_type in self.schema.items()
+            if is_numeric_type(column_type)
+        )
+        return tuple(columns)
 
 
 @dataclass(frozen=True, slots=True)

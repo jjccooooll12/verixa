@@ -57,6 +57,24 @@ paths:
     )
 
 
+def test_load_targets_config_parses_optional_dbt_manifest_path(tmp_path: Path) -> None:
+    targets_path = tmp_path / "verixa.targets.yaml"
+    targets_path.write_text(
+        """
+dbt:
+  manifest_path: target/manifest.json
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    config = load_targets_config(targets_path)
+
+    assert config is not None
+    assert config.paths == {}
+    assert config.dbt_manifest_path == (tmp_path / "target" / "manifest.json").resolve()
+
+
 def test_resolve_source_names_prefers_explicit_sources() -> None:
     resolved = resolve_source_names(
         Path("verixa.yaml"),
@@ -175,6 +193,139 @@ paths:
     assert resolved == ("stripe.transactions",)
     assert seen["base_ref"] == "origin/main"
     assert seen["cwd"] == tmp_path / "nested"
+
+
+def test_resolve_source_names_can_map_dbt_model_changes_to_sources(tmp_path: Path) -> None:
+    manifest_path = tmp_path / "target" / "manifest.json"
+    manifest_path.parent.mkdir()
+    manifest_path.write_text(
+        """
+{
+  "nodes": {
+    "model.demo.stg_orders": {
+      "resource_type": "model",
+      "original_file_path": "models/staging/orders.sql",
+      "depends_on": {
+        "nodes": ["source.demo.raw.stripe_transactions"],
+        "macros": []
+      }
+    }
+  },
+  "sources": {
+    "source.demo.raw.stripe_transactions": {
+      "database": "demo",
+      "schema": "raw",
+      "identifier": "stripe_transactions",
+      "name": "stripe_transactions",
+      "original_file_path": "models/sources/stripe.yml",
+      "depends_on": {
+        "nodes": []
+      }
+    }
+  },
+  "macros": {}
+}
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    targets_path = tmp_path / "verixa.targets.yaml"
+    targets_path.write_text(
+        """
+dbt:
+  manifest_path: target/manifest.json
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    resolved = resolve_source_names(
+        tmp_path / "verixa.yaml",
+        changed_files=("models/staging/orders.sql",),
+        targets_path=targets_path,
+        config_loader=lambda path: _project_config(),
+    )
+
+    assert resolved == ("stripe.transactions",)
+
+
+def test_resolve_source_names_can_map_changed_dbt_macros_to_sources(tmp_path: Path) -> None:
+    manifest_path = tmp_path / "target" / "manifest.json"
+    manifest_path.parent.mkdir()
+    manifest_path.write_text(
+        """
+{
+  "nodes": {
+    "model.demo.stg_orders": {
+      "resource_type": "model",
+      "original_file_path": "models/staging/orders.sql",
+      "depends_on": {
+        "nodes": ["source.demo.raw.stripe_transactions"],
+        "macros": ["macro.demo.currency_cleanup"]
+      }
+    }
+  },
+  "sources": {
+    "source.demo.raw.stripe_transactions": {
+      "database": "demo",
+      "schema": "raw",
+      "identifier": "stripe_transactions",
+      "name": "stripe_transactions",
+      "original_file_path": "models/sources/stripe.yml",
+      "depends_on": {
+        "nodes": []
+      }
+    }
+  },
+  "macros": {
+    "macro.demo.currency_cleanup": {
+      "resource_type": "macro",
+      "original_file_path": "macros/currency_cleanup.sql"
+    }
+  }
+}
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    targets_path = tmp_path / "verixa.targets.yaml"
+    targets_path.write_text(
+        """
+dbt:
+  manifest_path: target/manifest.json
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    resolved = resolve_source_names(
+        tmp_path / "verixa.yaml",
+        changed_files=("macros/currency_cleanup.sql",),
+        targets_path=targets_path,
+        config_loader=lambda path: _project_config(),
+    )
+
+    assert resolved == ("stripe.transactions",)
+
+
+def test_resolve_source_names_raises_for_missing_dbt_manifest(tmp_path: Path) -> None:
+    targets_path = tmp_path / "verixa.targets.yaml"
+    targets_path.write_text(
+        """
+dbt:
+  manifest_path: target/missing.json
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="dbt manifest"):
+        resolve_source_names(
+            tmp_path / "verixa.yaml",
+            changed_files=("models/staging/orders.sql",),
+            targets_path=targets_path,
+            config_loader=lambda path: _project_config(),
+        )
 
 
 def test_list_changed_files_against_reads_git_diff(tmp_path: Path) -> None:

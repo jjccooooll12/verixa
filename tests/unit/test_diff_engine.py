@@ -14,7 +14,7 @@ from verixa.contracts.models import (
 from verixa.diff.engine import build_plan_result
 from verixa.diff.risk import RiskConfig, SourceRiskHints
 from verixa.snapshot.models import ProjectSnapshot
-from tests.unit.test_support import make_source_snapshot
+from tests.unit.test_support import make_numeric_summary_snapshot, make_source_snapshot
 
 
 def test_build_plan_result_attaches_risks_and_baseline_findings() -> None:
@@ -169,3 +169,55 @@ def test_build_plan_result_tracks_warning_policy_sources() -> None:
     result = build_plan_result(config, baseline, current)
 
     assert result.warning_policy_sources == ("stripe.transactions",)
+
+
+def test_build_plan_result_includes_numeric_distribution_findings() -> None:
+    contract = SourceContract(
+        name="stripe.transactions",
+        table="raw.stripe_transactions",
+        schema={"amount": "FLOAT64"},
+        freshness=None,
+        tests=(),
+    )
+    config = ProjectConfig(
+        warehouse=WarehouseConfig(kind="bigquery", project="demo"),
+        sources={"stripe.transactions": contract},
+    )
+    baseline = ProjectSnapshot(
+        warehouse_kind="bigquery",
+        generated_at=datetime(2026, 4, 22, 11, 0, tzinfo=timezone.utc),
+        sources={
+            "stripe.transactions": make_source_snapshot(
+                numeric_summaries={
+                    "amount": make_numeric_summary_snapshot(
+                        "amount",
+                        p50_value=100.0,
+                        p95_value=100.0,
+                    )
+                }
+            )
+        },
+    )
+    current = ProjectSnapshot(
+        warehouse_kind="bigquery",
+        generated_at=datetime(2026, 4, 22, 12, 0, tzinfo=timezone.utc),
+        sources={
+            "stripe.transactions": make_source_snapshot(
+                numeric_summaries={
+                    "amount": make_numeric_summary_snapshot(
+                        "amount",
+                        p50_value=100.0,
+                        p95_value=180.0,
+                    )
+                }
+            )
+        },
+    )
+
+    result = build_plan_result(config, baseline, current)
+
+    finding = next(
+        finding for finding in result.findings if finding.code == "numeric_p95_changed"
+    )
+    assert finding.severity == "error"
+    assert "p95 changed on amount" in finding.message

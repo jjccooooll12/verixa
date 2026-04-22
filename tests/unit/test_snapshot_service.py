@@ -92,6 +92,7 @@ def test_snapshot_service_uses_test_capture_shape() -> None:
         accepted_values_tests=(
             AcceptedValuesTest(column="currency", values=("USD", "EUR")),
         ),
+        numeric_summary_columns=(),
         include_exact_row_count=False,
     )
 
@@ -109,6 +110,7 @@ def test_snapshot_service_uses_full_capture_shape_for_plan() -> None:
         accepted_values_tests=(
             AcceptedValuesTest(column="currency", values=("USD", "EUR")),
         ),
+        numeric_summary_columns=("amount",),
         include_exact_row_count=True,
     )
 

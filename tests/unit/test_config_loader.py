@@ -91,6 +91,10 @@ rules:
     error_drop_ratio: 0.4
     warning_growth_ratio: 0.25
     error_growth_ratio: 1.5
+  numeric_distribution_change:
+    warning_relative_delta: 0.3
+    error_relative_delta: 0.8
+    minimum_baseline_value: 2.5
 sources:
   stripe.transactions:
     table: raw.stripe_transactions
@@ -109,6 +113,9 @@ sources:
     assert config.rules.row_count_change.error_drop_ratio == 0.4
     assert config.rules.row_count_change.warning_growth_ratio == 0.25
     assert config.rules.row_count_change.error_growth_ratio == 1.5
+    assert config.rules.numeric_distribution_change.warning_relative_delta == 0.3
+    assert config.rules.numeric_distribution_change.error_relative_delta == 0.8
+    assert config.rules.numeric_distribution_change.minimum_baseline_value == 2.5
 
 
 def test_load_config_allows_source_level_rule_overrides(tmp_path: Path) -> None:
@@ -129,6 +136,9 @@ sources:
       row_count_change:
         warning_drop_ratio: 0.10
         error_drop_ratio: 0.25
+      numeric_distribution_change:
+        warning_relative_delta: 0.4
+        minimum_baseline_value: 5.0
     schema:
       amount: float
 """.strip()
@@ -145,6 +155,9 @@ sources:
     assert source.rules.row_count_change.error_drop_ratio == 0.25
     assert source.rules.row_count_change.warning_growth_ratio == 0.20
     assert source.rules.row_count_change.error_growth_ratio == 1.0
+    assert source.rules.numeric_distribution_change.warning_relative_delta == 0.4
+    assert source.rules.numeric_distribution_change.error_relative_delta == 0.5
+    assert source.rules.numeric_distribution_change.minimum_baseline_value == 5.0
 
 
 def test_load_config_parses_scan_and_baseline_settings(tmp_path: Path) -> None:
@@ -156,6 +169,7 @@ warehouse:
   project: demo-project
 baseline:
   warning_age: 72h
+  path: .verixa/{environment}/baseline.json
 sources:
   stripe.transactions:
     table: raw.stripe_transactions
@@ -175,6 +189,7 @@ sources:
 
     assert config.baseline.warning_age == "72h"
     assert config.baseline.warning_age_seconds == 72 * 3600
+    assert config.baseline.path == ".verixa/{environment}/baseline.json"
     assert source.scan is not None
     assert source.scan.timestamp_column == "created_at"
     assert source.scan.column_type == "TIMESTAMP"
@@ -223,6 +238,28 @@ sources:
     )
 
     with pytest.raises(ConfigError, match="Unsupported byte size"):
+        load_config(config_path)
+
+
+def test_load_config_rejects_empty_baseline_path(tmp_path: Path) -> None:
+    config_path = tmp_path / "verixa.yaml"
+    config_path.write_text(
+        """
+warehouse:
+  kind: bigquery
+baseline:
+  path: ""
+sources:
+  stripe.transactions:
+    table: raw.stripe_transactions
+    schema:
+      amount: float
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="baseline.path must be a non-empty string"):
         load_config(config_path)
 
 

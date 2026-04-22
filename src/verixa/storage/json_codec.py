@@ -9,6 +9,7 @@ from typing import Any
 from verixa.snapshot.models import (
     AcceptedValuesSnapshot,
     FreshnessSnapshot,
+    NumericSummarySnapshot,
     ProjectSnapshot,
     SourceSnapshot,
 )
@@ -54,6 +55,17 @@ def _snapshot_to_data(snapshot: ProjectSnapshot) -> dict[str, Any]:
                     }
                     for column, item in sorted(source.accepted_values.items())
                 },
+                "numeric_summaries": {
+                    column: {
+                        "column": item.column,
+                        "min_value": item.min_value,
+                        "p50_value": item.p50_value,
+                        "p95_value": item.p95_value,
+                        "max_value": item.max_value,
+                        "mean_value": item.mean_value,
+                    }
+                    for column, item in sorted(source.numeric_summaries.items())
+                },
                 "captured_at": _format_datetime(source.captured_at),
             }
             for name, source in sorted(snapshot.sources.items())
@@ -84,6 +96,17 @@ def _snapshot_from_data(data: dict[str, Any]) -> ProjectSnapshot:
                     invalid_examples=tuple(item.get("invalid_examples", [])),
                 )
                 for column, item in payload.get("accepted_values", {}).items()
+            },
+            numeric_summaries={
+                column: NumericSummarySnapshot(
+                    column=item["column"],
+                    min_value=item.get("min_value"),
+                    p50_value=item.get("p50_value"),
+                    p95_value=item.get("p95_value"),
+                    max_value=item.get("max_value"),
+                    mean_value=item.get("mean_value"),
+                )
+                for column, item in payload.get("numeric_summaries", {}).items()
             },
             captured_at=_parse_datetime(payload["captured_at"]),
         )

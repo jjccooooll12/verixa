@@ -23,6 +23,7 @@ def build_stats_query(
     null_rate_columns: Iterable[str],
     freshness_column: str | None,
     accepted_values_tests: Sequence[AcceptedValuesTest],
+    numeric_summary_columns: Iterable[str],
     *,
     include_exact_row_count: bool,
     scan_timestamp_column: str | None = None,
@@ -66,6 +67,24 @@ def build_stats_query(
             "ARRAY_AGG(DISTINCT "
             f"{invalid_value} IGNORE NULLS ORDER BY {invalid_value} LIMIT 10) AS "
             f"{_safe_alias('invalid_examples', test.column)}"
+        )
+
+    for column in sorted(set(numeric_summary_columns)):
+        quoted = _quote_identifier(column)
+        cast_value = f"SAFE_CAST({quoted} AS FLOAT64)"
+        select_lines.append(
+            f"MIN({cast_value}) AS {_safe_alias('numeric_min', column)}"
+        )
+        select_lines.append(
+            f"AVG({cast_value}) AS {_safe_alias('numeric_mean', column)}"
+        )
+        select_lines.append(
+            f"MAX({cast_value}) AS {_safe_alias('numeric_max', column)}"
+        )
+        select_lines.append(
+            "APPROX_QUANTILES("
+            f"{cast_value}, 100 IGNORE NULLS"
+            f") AS {_safe_alias('numeric_quantiles', column)}"
         )
 
     query = "SELECT\n  " + ",\n  ".join(select_lines) + f"\nFROM `{table_ref.full_name}`"

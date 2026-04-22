@@ -54,18 +54,22 @@ def test_run_plan_reports_findings_from_baseline(tmp_path: Path) -> None:
 warehouse:
   kind: bigquery
   project: demo
+baseline:
+  path: {baseline_path}
 sources:
   stripe.transactions:
     table: raw.stripe_transactions
     schema:
       amount: float
       currency: string
-""".strip()
+""".format(
+            baseline_path=(tmp_path / ".verixa" / "{environment}" / "baseline.json").as_posix()
+        ).strip()
         + "\n",
         encoding="utf-8",
     )
 
-    store = SnapshotStore(tmp_path / ".verixa")
+    store = SnapshotStore(tmp_path / ".verixa" / "prod")
     store.write_baseline(
         ProjectSnapshot(
             warehouse_kind="bigquery",
@@ -87,9 +91,9 @@ sources:
 
     result = run_plan(
         config_path,
+        environment="prod",
         connector_factory=_FakeConnector,
         snapshot_service_factory=_service_factory,
-        snapshot_store_factory=lambda: store,
     )
     output = render_diff_result(result, title="Plan")
 

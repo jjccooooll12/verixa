@@ -9,13 +9,19 @@ from verixa.config.loader import load_config, resolve_config_path
 from verixa.connectors.base import ConnectorError
 from verixa.connectors.bigquery.connector import BigQueryConnector
 from verixa.diff.models import DiffResult, Finding
-from verixa.storage.filesystem import SnapshotStore, StorageError
+from verixa.storage.filesystem import (
+    SnapshotStore,
+    StorageError,
+    create_snapshot_store,
+    resolve_environment_name,
+)
 
 
 def run_doctor(
     config_path: Path | None = None,
     *,
     source_names: tuple[str, ...] = (),
+    environment: str | None = None,
 ) -> DiffResult:
     findings: list[Finding] = []
     resolved_config_path = resolve_config_path(config_path)
@@ -40,6 +46,22 @@ def run_doctor(
                 source_name="config",
                 severity="error",
                 code="config_invalid",
+                message=str(exc),
+            )
+        )
+        return DiffResult(findings=tuple(findings), sources_checked=0, used_baseline=False)
+
+    try:
+        store = create_snapshot_store(
+            config.baseline.path,
+            environment=resolve_environment_name(environment),
+        )
+    except StorageError as exc:
+        findings.append(
+            Finding(
+                source_name="baseline",
+                severity="error",
+                code="baseline_path_invalid",
                 message=str(exc),
             )
         )

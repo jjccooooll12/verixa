@@ -32,6 +32,17 @@ def render_snapshot_summary_json(
                 "table": source.table,
                 "row_count": source.row_count,
                 "column_count": len(source.schema),
+                "numeric_summary_columns": len(source.numeric_summaries),
+                "numeric_summaries": {
+                    column_name: {
+                        "min_value": summary.min_value,
+                        "p50_value": summary.p50_value,
+                        "p95_value": summary.p95_value,
+                        "max_value": summary.max_value,
+                        "mean_value": summary.mean_value,
+                    }
+                    for column_name, summary in sorted(source.numeric_summaries.items())
+                },
                 "captured_at": source.captured_at.isoformat(),
                 "estimated_bytes_processed": None
                 if estimated_bytes_by_source is None

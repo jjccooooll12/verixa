@@ -29,9 +29,11 @@ Optional project-level `rules` can tune drift thresholds for:
 - null-rate increases
 - row-count drops
 - row-count growth
+- numeric p50/p95 drift
 
 Optional source-level `rules` can override those thresholds for a specific table.
 Optional project-level `baseline.warning_age` can warn when the stored snapshot is too old to trust drift output.
+Optional `baseline.path` can route snapshots to environment-specific files such as `.verixa/{environment}/baseline.json`.
 Optional project-level or source-level `check.fail_on_warning` can make warnings fail CI.
 Optional `warehouse.max_bytes_billed` can cap live BigQuery query cost.
 
@@ -63,6 +65,7 @@ Expected result:
 - current source metadata and stats are collected
 - a deterministic local baseline snapshot is written
 - the snapshot becomes the comparison point for future `diff` and `check` runs
+- lightweight numeric summaries are captured for declared numeric columns
 
 Optional machine-readable output:
 - `verixa snapshot --format json`
@@ -82,6 +85,10 @@ Optional estimate:
 Optional live-query ceiling:
 - `verixa snapshot --max-bytes-billed 500MB`
 
+Optional environment-specific baseline:
+- `verixa snapshot --environment prod`
+- or set `VERIXA_ENV=prod`
+
 ### 5. Run Pre-Deploy Diff
 Before shipping upstream changes, the user runs `verixa diff`.
 
@@ -90,6 +97,7 @@ Expected result:
 - Verixa compares current state to both the baseline snapshot and declared contracts
 - likely breakages are shown in a concise terminal report
 - downstream risk hints are attached if mapping data exists
+- numeric p50/p95 drift can be surfaced from stored summary baselines
 
 Current behavior:
 - `verixa diff` requires an existing baseline snapshot
@@ -98,6 +106,8 @@ Current behavior:
 - `verixa diff --format json` emits machine-readable findings for CI consumers
 - `--source` can restrict the run to one or more logical sources
 - `--changed-file` and `--changed-against` can auto-target sources through `verixa.targets.yaml`
+- `verixa.targets.yaml` can combine manual path mappings with optional dbt manifest lineage
+- `--environment` can select an environment-specific baseline path
 - explicit `--source` selection takes precedence over changed-file targeting
 - unmatched changed files fall back to all configured sources
 - `--estimate-bytes` can attach BigQuery dry-run byte estimates to the output
@@ -120,6 +130,7 @@ Current behavior:
 - runtime, config, auth, or storage failures exit `2`
 - `verixa check --format json` emits deterministic JSON output
 - `--changed-file` and `--changed-against` can auto-target sources through `verixa.targets.yaml`
+- `--environment` can select an environment-specific baseline path
 - `--max-bytes-billed` can cap live query cost for the run
 - `verixa cost check` estimates the live query shape ahead of time
 
@@ -128,6 +139,7 @@ Use `verixa status` when you want a quick environment view.
 
 It shows:
 - config found or missing
+- active baseline environment
 - baseline found or missing
 - baseline age
 - warehouse auth status
@@ -150,6 +162,7 @@ Use `verixa doctor` when you need diagnostics.
 It checks:
 - config validity
 - baseline readability
+- baseline path resolution
 - auth usability
 - per-source metadata access
 
@@ -185,6 +198,8 @@ They are compatibility shims, not the preferred command names.
 13. Verixa rebrand, command refinement, status, doctor, explain, and cost.
 14. Max-bytes-billed enforcement for live BigQuery query ceilings.
 15. Automatic changed-file to source targeting for CI-oriented runs.
+16. Numeric distribution summaries and p50/p95 drift detection.
+17. Environment-specific baseline files and dbt-manifest-driven source targeting.
 
 ### Update Process During Implementation
 When work starts on a task:
@@ -214,7 +229,7 @@ A minimal CI workflow should:
 1. install the package
 2. authenticate to Google Cloud
 3. restore or check out the baseline snapshot
-4. optionally fetch a base ref and use `verixa.targets.yaml` for changed-file targeting
+4. optionally fetch a base ref and use `verixa.targets.yaml` for changed-file targeting, including optional dbt manifest lineage
 5. run `verixa check --fail-on-error --format json` if machine-readable logs are needed
 6. upload the JSON report as a workflow artifact if desired
 
@@ -237,4 +252,4 @@ The workspace has been validated end-to-end against a real BigQuery project usin
 - No dashboard publishing step.
 - No background monitoring daemon.
 - No hosted API dependency.
-- No automatic lineage crawling in v1.
+- No full lineage platform or lineage UI in v1.

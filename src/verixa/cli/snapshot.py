@@ -12,7 +12,7 @@ from verixa.connectors.bigquery.connector import BigQueryConnector
 from verixa.contracts.models import ProjectConfig, WarehouseConfig
 from verixa.snapshot.models import ProjectSnapshot
 from verixa.snapshot.service import SnapshotService
-from verixa.storage.filesystem import SnapshotStore
+from verixa.storage.filesystem import SnapshotStore, create_snapshot_store
 
 ConfigLoader = Callable[..., ProjectConfig]
 ConnectorFactory = Callable[..., WarehouseConnector]
@@ -24,6 +24,7 @@ def run_snapshot(
     config_path: Path,
     *,
     source_names: tuple[str, ...] = (),
+    environment: str | None = None,
     max_bytes_billed: int | None = None,
     config_loader: ConfigLoader = load_config,
     connector_factory: ConnectorFactory = BigQueryConnector,
@@ -36,7 +37,10 @@ def run_snapshot(
     connector = connector_factory(config.warehouse, max_bytes_billed=max_bytes_billed)
     service = snapshot_service_factory(connector)
     snapshot = service.capture(config, mode="snapshot")
-    store = snapshot_store_factory()
+    if snapshot_store_factory is SnapshotStore:
+        store = create_snapshot_store(config.baseline.path, environment=environment)
+    else:
+        store = snapshot_store_factory()
     if source_names:
         baseline_path = store.merge_baseline(snapshot)
     else:

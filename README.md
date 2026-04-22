@@ -23,16 +23,19 @@ Implemented now:
 - BigQuery-only v1
 - local deterministic baseline snapshots
 - contract checks and baseline drift heuristics
+- lightweight numeric distribution summaries for declared numeric columns
+- low-noise numeric p50/p95 drift detection from stored baselines
 - text and JSON output
 - source scoping with `--source`
 - changed-file source targeting with `verixa.targets.yaml`, `--changed-file`, and `--changed-against`
+- optional dbt-manifest lineage for changed-file source targeting
 - byte estimation with `verixa cost` and `--estimate-bytes`
 - max-bytes-billed enforcement for live BigQuery queries
 - status and diagnostic commands
 - CI-friendly exit codes
 
 Current local suite status:
-- `79 passed, 1 skipped`
+- `96 passed, 1 skipped`
 
 ## Install
 
@@ -110,9 +113,14 @@ rules:
     error_drop_ratio: 0.40
     warning_growth_ratio: 0.25
     error_growth_ratio: 1.50
+  numeric_distribution_change:
+    warning_relative_delta: 0.25
+    error_relative_delta: 0.50
+    minimum_baseline_value: 1.0
 
 baseline:
   warning_age: 168h
+  path: .verixa/{environment}/baseline.json
 
 sources:
   stripe.transactions:
@@ -143,12 +151,18 @@ sources:
 Notes:
 - `schema` can be a mapping or a list of one-item mappings.
 - `verixa.targets.yaml` is optional. Use it to map repo file paths to logical sources for CI targeting.
+- `baseline.path` defaults to `.verixa/baseline.json`.
+- `baseline.path` can use `{environment}` or `{env}` placeholders for environment-specific baselines.
+- `--environment <name>` and `VERIXA_ENV` both select the active baseline environment.
+- snapshot and diff runs automatically capture lightweight numeric summaries for declared numeric columns
 - `freshness` is explicit in v1: `column` plus `max_age`.
 - `scan` is optional. Use it to bound expensive stats queries to a recent time window.
 - `scan.timestamp_column` supports `timestamp`, `datetime`, and `date` columns.
 - `warehouse.max_bytes_billed` is optional. Use it to cap live BigQuery stats queries.
 - top-level `rules` is optional.
 - per-source `rules` overrides only the thresholds specified for that source.
+- numeric distribution drift currently uses stored `p50` and `p95` summaries for declared numeric columns.
+- `numeric_distribution_change.minimum_baseline_value` suppresses noise on near-zero baselines.
 - `check.fail_on_warning` is optional at project or source scope.
 - `baseline.warning_age` is optional. Set it to `null` to disable stale-baseline warnings.
 - test columns must be declared in `schema`.
@@ -188,8 +202,24 @@ Or refresh only sources impacted by changed files:
 verixa snapshot --changed-file models/staging/stripe/orders.sql
 ```
 
+Or capture an environment-specific baseline:
+
+```bash
+verixa snapshot --environment prod
+```
+
 This writes a deterministic baseline file at:
-- `.verixa/baseline.json`
+- `.verixa/baseline.json` by default
+- or your configured `baseline.path`, such as `.verixa/prod/baseline.json`
+
+Snapshot and diff baselines also store lightweight numeric summaries for declared numeric columns:
+- `min`
+- `p50`
+- `p95`
+- `max`
+- `mean`
+
+Diff uses the stored `p50` and `p95` summaries to surface numeric drift when relative change exceeds configured thresholds.
 
 ### 5. Diff current data against contract and baseline
 ```bash
@@ -208,6 +238,12 @@ Or resolve impacted sources automatically:
 verixa diff --changed-against origin/main
 ```
 
+Or diff against one environment-specific baseline:
+
+```bash
+verixa diff --environment prod
+```
+
 ### 6. Gate CI
 ```bash
 verixa check --fail-on-error
@@ -224,8 +260,10 @@ Queries BigQuery and writes the baseline snapshot.
 Behavior:
 - targeted runs with `--source` merge into the existing baseline instead of dropping unrelated sources
 - supports `--changed-file`, `--changed-against`, and `--targets-config`
+- supports `--environment` for environment-specific baseline files
 - explicit `--source` takes precedence over changed-file targeting
 - unmatched changed files fall back to all configured sources
+- captures lightweight numeric summaries for declared numeric columns
 - `--format json` is supported
 - `--estimate-bytes` can attach dry-run estimates for the snapshot query shape
 - `--max-bytes-billed` can cap live query cost for the run
@@ -235,6 +273,7 @@ Requires an existing baseline snapshot and shows likely breakages before deploy,
 - removed or changed columns
 - null-rate spikes
 - row-count drops or spikes
+- numeric p50/p95 drift on declared numeric columns
 - freshness violations
 - accepted-values failures
 - `no_nulls` violations
@@ -244,8 +283,11 @@ Behavior:
 - compares current state to both the declared contract and stored baseline
 - supports `--source`
 - supports `--changed-file`, `--changed-against`, and `--targets-config`
+- supports `--environment` for environment-specific baseline files
 - explicit `--source` takes precedence over changed-file targeting
 - unmatched changed files fall back to all configured sources
+- refreshes numeric summaries for declared numeric columns alongside the rest of the snapshot state
+- surfaces numeric drift findings from stored `p50` and `p95` summaries
 - supports `--format json`
 - supports `--estimate-bytes`
 - supports `--max-bytes-billed`
@@ -288,6 +330,7 @@ Exit codes:
 Shows:
 - config path found or missing
 - baseline path found or missing
+- active baseline environment
 - baseline age
 - warehouse auth status
 - configured `max_bytes_billed`
@@ -302,6 +345,7 @@ verixa status
 Runs diagnostics for:
 - config validity
 - baseline readability
+- baseline path resolution
 - warehouse auth
 - per-source metadata access
 
@@ -360,12 +404,17 @@ paths:
   macros/shared/:
     - stripe.transactions
     - stripe.customers
+
+dbt:
+  manifest_path: target/manifest.json
 ```
 
 Behavior:
 - `--source` overrides changed-file targeting when both are provided
 - `--changed-file` accepts one or more repo-relative paths
 - `--changed-against <ref>` uses `git diff <ref>...HEAD`
+- manual path mappings and dbt manifest lineage are combined when both are configured
+- dbt manifest targeting can map changed models or macros back to upstream Verixa sources
 - unmatched changed files fall back to all configured sources
 - missing `verixa.targets.yaml` is an error only when changed-file targeting is requested
 
@@ -483,7 +532,7 @@ Current v1 limitations:
 - no lineage import or graph UI
 - no Snowflake connector yet
 - no Databricks connector yet
-- no numeric distribution summaries yet
+- no dbt artifact import yet
 
 ## Internal Layout Note
 The public CLI and package branding is now Verixa.

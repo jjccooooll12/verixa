@@ -74,6 +74,9 @@ class _FakeArrayQueryParameter:
         self.values = values
 
 
+_MISSING = object()
+
+
 class _FakeQueryJobConfig:
     def __init__(
         self,
@@ -81,12 +84,15 @@ class _FakeQueryJobConfig:
         query_parameters: list[object],
         dry_run: bool = False,
         use_query_cache: bool = True,
-        maximum_bytes_billed: int | None = None,
+        maximum_bytes_billed: object = _MISSING,
     ) -> None:
         self.query_parameters = query_parameters
         self.dry_run = dry_run
         self.use_query_cache = use_query_cache
-        self.maximum_bytes_billed = maximum_bytes_billed
+        self.maximum_bytes_billed_provided = maximum_bytes_billed is not _MISSING
+        self.maximum_bytes_billed = (
+            None if maximum_bytes_billed is _MISSING else maximum_bytes_billed
+        )
 
 
 @pytest.fixture
@@ -144,6 +150,10 @@ def test_run_stats_query_maps_results_and_query_parameters(
             "null_rate__amount": 0.08,
             "null_rate__currency": 0.0,
             "null_rate__created_at": 0.0,
+            "numeric_min__amount": 1.0,
+            "numeric_mean__amount": 7.5,
+            "numeric_max__amount": 22.0,
+            "numeric_quantiles__amount": [float(index) for index in range(101)],
             "freshness_latest": datetime(2026, 4, 22, 11, 30, tzinfo=timezone.utc),
             "invalid_count__currency": 2,
             "invalid_examples__currency": ["AUD", "CAD"],
@@ -151,7 +161,7 @@ def test_run_stats_query_maps_results_and_query_parameters(
     )
     connector.__dict__["_client"] = fake_client
 
-    row_count, null_rates, freshness, accepted_values = connector._run_stats_query(
+    row_count, null_rates, freshness, accepted_values, numeric_summaries = connector._run_stats_query(
         source=source_contract,
         capture_request=SourceCaptureRequest.for_snapshot(source_contract),
         table_ref="demo.raw.stripe_transactions",
@@ -166,6 +176,11 @@ def test_run_stats_query_maps_results_and_query_parameters(
     assert freshness.age_seconds == 1800
     assert accepted_values["currency"].invalid_count == 2
     assert accepted_values["currency"].invalid_examples == ("AUD", "CAD")
+    assert numeric_summaries["amount"].min_value == 1.0
+    assert numeric_summaries["amount"].mean_value == 7.5
+    assert numeric_summaries["amount"].p50_value == 50.0
+    assert numeric_summaries["amount"].p95_value == 95.0
+    assert numeric_summaries["amount"].max_value == 22.0
     assert fake_client.last_query is not None
     assert "FROM `demo.raw.stripe_transactions`" in fake_client.last_query
     query_parameters = fake_client.last_job_config.query_parameters
@@ -230,6 +245,8 @@ def test_capture_source_uses_contract_only_stats_for_test_mode(
     assert "exact_row_count" not in (fake_client.last_query or "")
     assert "null_rate__created_at" not in (fake_client.last_query or "")
     assert "null_rate__currency" not in (fake_client.last_query or "")
+    assert "numeric_min__amount" not in (fake_client.last_query or "")
+    assert snapshot.numeric_summaries == {}
 
 
 def test_capture_source_skips_stats_query_when_only_schema_is_needed(
@@ -267,6 +284,10 @@ def test_capture_source_applies_scan_window_to_bigquery_query(
             "null_rate__amount": 0.0,
             "null_rate__currency": 0.0,
             "null_rate__created_at": 0.0,
+            "numeric_min__amount": 1.0,
+            "numeric_mean__amount": 7.0,
+            "numeric_max__amount": 20.0,
+            "numeric_quantiles__amount": [float(index) for index in range(101)],
             "freshness_latest": datetime(2026, 4, 22, 11, 30, tzinfo=timezone.utc),
             "invalid_count__currency": 0,
             "invalid_examples__currency": [],
@@ -295,6 +316,7 @@ def test_capture_source_applies_scan_window_to_bigquery_query(
     assert "WHERE `created_at` >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 604800 SECOND)" in (
         fake_client.last_query or ""
     )
+    assert "numeric_quantiles__amount" in (fake_client.last_query or "")
 
 
 def test_capture_source_applies_max_bytes_billed_to_live_queries(
@@ -325,6 +347,30 @@ def test_capture_source_applies_max_bytes_billed_to_live_queries(
     )
 
     assert fake_client.last_job_config.maximum_bytes_billed == 5 * 1024 * 1024
+
+
+def test_capture_source_omits_maximum_bytes_billed_when_unset(
+    fake_bigquery_modules,  # noqa: ARG001
+    source_contract: SourceContract,
+) -> None:
+    connector = BigQueryConnector(WarehouseConfig(kind="bigquery", project="demo", location="US"))
+    fake_client = _FakeClient(
+        row={
+            "null_rate__amount": 0.0,
+            "freshness_latest": datetime(2026, 4, 22, 11, 30, tzinfo=timezone.utc),
+            "invalid_count__currency": 0,
+            "invalid_examples__currency": [],
+        }
+    )
+    connector.__dict__["_client"] = fake_client
+
+    connector.capture_source(
+        source_contract,
+        SourceCaptureRequest.for_test(source_contract),
+    )
+
+    assert fake_client.last_job_config.maximum_bytes_billed is None
+    assert fake_client.last_job_config.maximum_bytes_billed_provided is False
 
 
 def test_estimate_source_bytes_uses_bigquery_dry_run(

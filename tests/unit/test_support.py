@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from verixa.snapshot.models import (
     AcceptedValuesSnapshot,
     FreshnessSnapshot,
+    NumericSummarySnapshot,
     SourceSnapshot,
 )
 
@@ -18,6 +19,7 @@ def make_source_snapshot(
     null_rates: dict[str, float | None] | None = None,
     freshness: FreshnessSnapshot | None = None,
     accepted_values: dict[str, AcceptedValuesSnapshot] | None = None,
+    numeric_summaries: dict[str, NumericSummarySnapshot] | None = None,
 ) -> SourceSnapshot:
     return SourceSnapshot(
         source_name=source_name,
@@ -28,6 +30,7 @@ def make_source_snapshot(
         freshness=freshness,
         accepted_values=accepted_values or {},
         captured_at=datetime(2026, 4, 22, 11, 0, tzinfo=timezone.utc),
+        numeric_summaries=numeric_summaries or {},
     )
 
 
@@ -50,4 +53,23 @@ def make_accepted_values_snapshot(
         column=column,
         invalid_count=invalid_count,
         invalid_examples=examples,
+    )
+
+
+def make_numeric_summary_snapshot(
+    column: str,
+    *,
+    min_value: float | None = 1.0,
+    p50_value: float | None = 5.0,
+    p95_value: float | None = 9.0,
+    max_value: float | None = 10.0,
+    mean_value: float | None = 5.5,
+) -> NumericSummarySnapshot:
+    return NumericSummarySnapshot(
+        column=column,
+        min_value=min_value,
+        p50_value=p50_value,
+        p95_value=p95_value,
+        max_value=max_value,
+        mean_value=mean_value,
     )

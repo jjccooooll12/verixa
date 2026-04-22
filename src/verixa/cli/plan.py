@@ -13,7 +13,7 @@ from verixa.diff.engine import build_plan_result
 from verixa.diff.models import DiffResult
 from verixa.diff.risk import RiskConfig, load_risk_config
 from verixa.snapshot.service import SnapshotService
-from verixa.storage.filesystem import SnapshotStore
+from verixa.storage.filesystem import SnapshotStore, create_snapshot_store
 
 ConfigLoader = Callable[..., ProjectConfig]
 RiskLoader = Callable[[Path | None], RiskConfig | None]
@@ -27,6 +27,7 @@ def run_plan(
     risk_path: Path | None = None,
     *,
     source_names: tuple[str, ...] = (),
+    environment: str | None = None,
     max_bytes_billed: int | None = None,
     config_loader: ConfigLoader = load_config,
     risk_loader: RiskLoader = load_risk_config,
@@ -40,7 +41,10 @@ def run_plan(
     risk_config = risk_loader(risk_path)
     connector = connector_factory(config.warehouse, max_bytes_billed=max_bytes_billed)
     service = snapshot_service_factory(connector)
-    store = snapshot_store_factory()
+    if snapshot_store_factory is SnapshotStore:
+        store = create_snapshot_store(config.baseline.path, environment=environment)
+    else:
+        store = snapshot_store_factory()
     baseline = store.read_baseline()
     current = service.capture(config, mode="plan")
     return build_plan_result(config, baseline, current, risk_config=risk_config)

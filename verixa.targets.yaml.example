@@ -5,3 +5,6 @@ paths:
     - stripe.transactions
   macros/shared/:
     - stripe.transactions
+
+dbt:
+  manifest_path: target/manifest.json

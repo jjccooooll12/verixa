@@ -7,6 +7,7 @@ from verixa.cli.snapshot import run_snapshot
 from verixa.output.console import render_snapshot_summary
 from verixa.snapshot.models import ProjectSnapshot, SourceSnapshot
 from verixa.storage.filesystem import SnapshotStore
+from tests.unit.test_support import make_numeric_summary_snapshot
 
 
 class _FakeConnector:
@@ -35,6 +36,9 @@ class _FakeSnapshotService:
                     freshness=None,
                     accepted_values={},
                     captured_at=datetime(2026, 4, 22, 11, 0, tzinfo=timezone.utc),
+                    numeric_summaries={
+                        "amount": make_numeric_summary_snapshot("amount")
+                    },
                 )
             },
         )
@@ -74,6 +78,7 @@ sources:
     output = render_snapshot_summary(snapshot, baseline_path)
 
     assert "Captured baseline snapshot" in output
+    assert "1 numeric summaries" in output
     assert baseline_path == tmp_path / ".verixa" / "baseline.json"
     assert baseline_path.exists()
     assert created_services[0].mode_seen == "snapshot"
@@ -112,3 +117,33 @@ sources:
     )
 
     assert created_connectors[0].max_bytes_billed == 1024
+
+
+def test_run_snapshot_uses_environment_specific_baseline_path(tmp_path: Path) -> None:
+    config_path = tmp_path / "verixa.yaml"
+    config_path.write_text(
+        f"""
+warehouse:
+  kind: bigquery
+  project: demo
+baseline:
+  path: {tmp_path}/.verixa/{{environment}}/baseline.json
+sources:
+  stripe.transactions:
+    table: raw.stripe_transactions
+    schema:
+      amount: float
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    _, baseline_path = run_snapshot(
+        config_path,
+        environment="prod",
+        connector_factory=_FakeConnector,
+        snapshot_service_factory=_FakeSnapshotService,
+    )
+
+    assert baseline_path == tmp_path / ".verixa" / "prod" / "baseline.json"
+    assert baseline_path.exists()

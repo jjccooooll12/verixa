@@ -20,6 +20,7 @@ class SourceCaptureRequest:
     null_rate_columns: tuple[str, ...] = ()
     freshness_column: str | None = None
     accepted_values_tests: tuple[AcceptedValuesTest, ...] = ()
+    numeric_summary_columns: tuple[str, ...] = ()
     include_exact_row_count: bool = False
     scan_timestamp_column: str | None = None
     scan_timestamp_type: str | None = None
@@ -34,6 +35,7 @@ class SourceCaptureRequest:
             or self.null_rate_columns
             or self.freshness_column
             or self.accepted_values_tests
+            or self.numeric_summary_columns
         )
 
     @classmethod
@@ -44,6 +46,7 @@ class SourceCaptureRequest:
             null_rate_columns=source.declared_columns,
             freshness_column=source.freshness.column if source.freshness else None,
             accepted_values_tests=source.accepted_values_tests,
+            numeric_summary_columns=source.numeric_summary_columns,
             include_exact_row_count=True,
             scan_timestamp_column=(
                 source.scan.timestamp_column if source.scan is not None else None
@@ -68,6 +71,7 @@ class SourceCaptureRequest:
             null_rate_columns=source.no_null_columns,
             freshness_column=source.freshness.column if source.freshness else None,
             accepted_values_tests=source.accepted_values_tests,
+            numeric_summary_columns=(),
             include_exact_row_count=False,
             scan_timestamp_column=(
                 source.scan.timestamp_column if source.scan is not None else None

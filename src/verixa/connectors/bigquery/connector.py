@@ -17,6 +17,7 @@ from verixa.contracts.normalize import normalize_type_name
 from verixa.snapshot.models import (
     AcceptedValuesSnapshot,
     FreshnessSnapshot,
+    NumericSummarySnapshot,
     SourceSnapshot,
 )
 
@@ -71,9 +72,10 @@ class BigQueryConnector(WarehouseConnector):
         null_rates = {column: None for column in capture_request.null_rate_columns}
         freshness = None
         accepted_values: dict[str, AcceptedValuesSnapshot] = {}
+        numeric_summaries: dict[str, NumericSummarySnapshot] = {}
 
         if capture_request.needs_stats_query:
-            row_count, null_rates, freshness, accepted_values = self._run_stats_query(
+            row_count, null_rates, freshness, accepted_values, numeric_summaries = self._run_stats_query(
                 source=source,
                 capture_request=capture_request,
                 table_ref=table_ref.full_name,
@@ -89,6 +91,7 @@ class BigQueryConnector(WarehouseConnector):
             null_rates=null_rates,
             freshness=freshness,
             accepted_values=accepted_values,
+            numeric_summaries=numeric_summaries,
             captured_at=captured_at,
         )
 
@@ -104,6 +107,7 @@ class BigQueryConnector(WarehouseConnector):
         dict[str, float | None],
         FreshnessSnapshot | None,
         dict[str, AcceptedValuesSnapshot],
+        dict[str, NumericSummarySnapshot],
     ]:
         try:
             from google.cloud import bigquery
@@ -117,6 +121,7 @@ class BigQueryConnector(WarehouseConnector):
             null_rate_columns=capture_request.null_rate_columns,
             freshness_column=capture_request.freshness_column,
             accepted_values_tests=capture_request.accepted_values_tests,
+            numeric_summary_columns=capture_request.numeric_summary_columns,
             include_exact_row_count=capture_request.include_exact_row_count,
             scan_timestamp_column=capture_request.scan_timestamp_column,
             scan_timestamp_type=capture_request.scan_timestamp_type,
@@ -127,10 +132,10 @@ class BigQueryConnector(WarehouseConnector):
             bigquery.ArrayQueryParameter(parameter.name, "STRING", list(parameter.values))
             for parameter in parameters
         ]
-        job_config = bigquery.QueryJobConfig(
-            query_parameters=query_parameters,
-            maximum_bytes_billed=self._effective_max_bytes_billed,
-        )
+        job_config_kwargs = {"query_parameters": query_parameters}
+        if self._effective_max_bytes_billed is not None:
+            job_config_kwargs["maximum_bytes_billed"] = self._effective_max_bytes_billed
+        job_config = bigquery.QueryJobConfig(**job_config_kwargs)
 
         try:
             query_job = self._client.query(query, job_config=job_config)
@@ -173,7 +178,19 @@ class BigQueryConnector(WarehouseConnector):
                 invalid_examples=tuple(row.get(f"invalid_examples__{test.column}") or ()),
             )
 
-        return row_count, null_rates, freshness, accepted_values
+        numeric_summaries: dict[str, NumericSummarySnapshot] = {}
+        for column in capture_request.numeric_summary_columns:
+            quantiles = row.get(f"numeric_quantiles__{column}")
+            numeric_summaries[column] = NumericSummarySnapshot(
+                column=column,
+                min_value=_maybe_float(row.get(f"numeric_min__{column}")),
+                p50_value=_quantile_at(quantiles, 50),
+                p95_value=_quantile_at(quantiles, 95),
+                max_value=_maybe_float(row.get(f"numeric_max__{column}")),
+                mean_value=_maybe_float(row.get(f"numeric_mean__{column}")),
+            )
+
+        return row_count, null_rates, freshness, accepted_values, numeric_summaries
 
     def estimate_source_bytes(
         self,
@@ -196,6 +213,7 @@ class BigQueryConnector(WarehouseConnector):
             null_rate_columns=capture_request.null_rate_columns,
             freshness_column=capture_request.freshness_column,
             accepted_values_tests=capture_request.accepted_values_tests,
+            numeric_summary_columns=capture_request.numeric_summary_columns,
             include_exact_row_count=capture_request.include_exact_row_count,
             scan_timestamp_column=capture_request.scan_timestamp_column,
             scan_timestamp_type=capture_request.scan_timestamp_type,
@@ -282,3 +300,11 @@ def _format_bytes(value: int) -> str:
             return f"{size:.1f} {unit}"
         size /= 1024
     return f"{int(value)} B"
+
+
+def _quantile_at(values: object, index: int) -> float | None:
+    if not isinstance(values, (list, tuple)):
+        return None
+    if index < 0 or index >= len(values):
+        return None
+    return _maybe_float(values[index])

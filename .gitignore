@@ -1,0 +1,23 @@
+__pycache__/
+.pytest_cache/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+.coverage
+
+# Local secrets and credentials
+.secrets/
+.env
+.env.*
+!.env.example
+*.pem
+*.p12
+*.key
+*.crt
+*.cert
+*service-account*.json
+*credentials*.json
+*secret*.json

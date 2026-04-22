@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from dataguard.connectors.base import ConnectorError
-from dataguard.connectors.bigquery.types import parse_table_ref
+from verixa.connectors.base import ConnectorError
+from verixa.connectors.bigquery.types import parse_table_ref
 
 
 def test_parse_table_ref_supports_default_project() -> None:

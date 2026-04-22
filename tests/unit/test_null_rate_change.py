@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from dataguard.contracts.models import NullRateChangeThresholds, SourceContract
-from dataguard.rules.null_rate_change import check_null_rate_changes
+from verixa.contracts.models import NullRateChangeThresholds, SourceContract
+from verixa.rules.null_rate_change import check_null_rate_changes
 from tests.unit.test_support import make_source_snapshot
 
 

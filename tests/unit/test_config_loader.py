@@ -4,12 +4,12 @@ from pathlib import Path
 
 import pytest
 
-from dataguard.config.errors import ConfigError
-from dataguard.config.loader import load_config
+from verixa.config.errors import ConfigError
+from verixa.config.loader import load_config
 
 
 def test_load_config_supports_schema_list_shorthand(tmp_path: Path) -> None:
-    config_path = tmp_path / "dataguard.yaml"
+    config_path = tmp_path / "verixa.yaml"
     config_path.write_text(
         """
 warehouse:
@@ -52,7 +52,7 @@ sources:
 
 
 def test_load_config_rejects_freshness_string_shorthand(tmp_path: Path) -> None:
-    config_path = tmp_path / "dataguard.yaml"
+    config_path = tmp_path / "verixa.yaml"
     config_path.write_text(
         """
 warehouse:
@@ -76,7 +76,7 @@ sources:
 
 
 def test_load_config_parses_rule_thresholds(tmp_path: Path) -> None:
-    config_path = tmp_path / "dataguard.yaml"
+    config_path = tmp_path / "verixa.yaml"
     config_path.write_text(
         """
 warehouse:
@@ -112,7 +112,7 @@ sources:
 
 
 def test_load_config_allows_source_level_rule_overrides(tmp_path: Path) -> None:
-    config_path = tmp_path / "dataguard.yaml"
+    config_path = tmp_path / "verixa.yaml"
     config_path.write_text(
         """
 warehouse:
@@ -148,7 +148,7 @@ sources:
 
 
 def test_load_config_parses_scan_and_baseline_settings(tmp_path: Path) -> None:
-    config_path = tmp_path / "dataguard.yaml"
+    config_path = tmp_path / "verixa.yaml"
     config_path.write_text(
         """
 warehouse:
@@ -182,7 +182,7 @@ sources:
 
 
 def test_load_config_parses_source_check_policy(tmp_path: Path) -> None:
-    config_path = tmp_path / "dataguard.yaml"
+    config_path = tmp_path / "verixa.yaml"
     config_path.write_text(
         """
 warehouse:
@@ -209,7 +209,7 @@ sources:
 
 
 def test_load_config_accepts_date_scan_columns(tmp_path: Path) -> None:
-    config_path = tmp_path / "dataguard.yaml"
+    config_path = tmp_path / "verixa.yaml"
     config_path.write_text(
         """
 warehouse:
@@ -236,7 +236,7 @@ sources:
 
 
 def test_load_config_can_select_sources(tmp_path: Path) -> None:
-    config_path = tmp_path / "dataguard.yaml"
+    config_path = tmp_path / "verixa.yaml"
     config_path.write_text(
         """
 warehouse:
@@ -262,7 +262,7 @@ sources:
 
 
 def test_load_config_rejects_unknown_source_selection(tmp_path: Path) -> None:
-    config_path = tmp_path / "dataguard.yaml"
+    config_path = tmp_path / "verixa.yaml"
     config_path.write_text(
         """
 warehouse:

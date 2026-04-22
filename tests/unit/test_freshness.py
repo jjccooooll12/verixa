@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from dataguard.contracts.models import FreshnessConfig, SourceContract
-from dataguard.rules.freshness import check_freshness
+from verixa.contracts.models import FreshnessConfig, SourceContract
+from verixa.rules.freshness import check_freshness
 from tests.unit.test_support import make_freshness_snapshot, make_source_snapshot
 
 

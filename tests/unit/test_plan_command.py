@@ -3,10 +3,10 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
-from dataguard.cli.plan import run_plan
-from dataguard.output.console import render_diff_result
-from dataguard.snapshot.models import ProjectSnapshot, SourceSnapshot
-from dataguard.storage.filesystem import SnapshotStore
+from verixa.cli.plan import run_plan
+from verixa.output.console import render_diff_result
+from verixa.snapshot.models import ProjectSnapshot, SourceSnapshot
+from verixa.storage.filesystem import SnapshotStore
 
 
 class _FakeConnector:
@@ -41,7 +41,7 @@ class _FakeSnapshotService:
 
 def test_run_plan_reports_findings_from_baseline(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr("dataguard.cli.plan.BigQueryConnector", _FakeConnector)
+    monkeypatch.setattr("verixa.cli.plan.BigQueryConnector", _FakeConnector)
     created_services: list[_FakeSnapshotService] = []
 
     def _service_factory(connector):  # noqa: ANN001
@@ -49,9 +49,9 @@ def test_run_plan_reports_findings_from_baseline(tmp_path: Path, monkeypatch) ->
         created_services.append(service)
         return service
 
-    monkeypatch.setattr("dataguard.cli.plan.SnapshotService", _service_factory)
+    monkeypatch.setattr("verixa.cli.plan.SnapshotService", _service_factory)
 
-    config_path = tmp_path / "dataguard.yaml"
+    config_path = tmp_path / "verixa.yaml"
     config_path.write_text(
         """
 warehouse:
@@ -68,7 +68,7 @@ sources:
         encoding="utf-8",
     )
 
-    store = SnapshotStore(tmp_path / ".dataguard")
+    store = SnapshotStore(tmp_path / ".verixa")
     store.write_baseline(
         ProjectSnapshot(
             warehouse_kind="bigquery",

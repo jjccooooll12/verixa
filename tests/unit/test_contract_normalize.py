@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from dataguard.contracts.normalize import (
+from verixa.contracts.normalize import (
     NormalizationError,
     normalize_schema_mapping,
     normalize_type_name,

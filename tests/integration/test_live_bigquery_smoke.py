@@ -7,20 +7,20 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from dataguard.cli.app import app
+from verixa.cli.app import app
 
 pytestmark = pytest.mark.skipif(
-    os.getenv("DATAGUARD_RUN_LIVE_BIGQUERY") != "1",
-    reason="Set DATAGUARD_RUN_LIVE_BIGQUERY=1 to enable live BigQuery smoke tests.",
+    os.getenv("VERIXA_RUN_LIVE_BIGQUERY") != "1",
+    reason="Set VERIXA_RUN_LIVE_BIGQUERY=1 to enable live BigQuery smoke tests.",
 )
 
 
-def test_live_bigquery_snapshot_plan_and_check(tmp_path: Path, monkeypatch) -> None:
+def test_live_bigquery_snapshot_validate_diff_cost_and_check(tmp_path: Path, monkeypatch) -> None:
     pytest.importorskip("google.cloud.bigquery")
 
-    config_env = os.getenv("DATAGUARD_LIVE_CONFIG")
+    config_env = os.getenv("VERIXA_LIVE_CONFIG")
     if not config_env:
-        pytest.skip("Set DATAGUARD_LIVE_CONFIG to a real DataGuard config file.")
+        pytest.skip("Set VERIXA_LIVE_CONFIG to a real Verixa config file.")
 
     source_config_path = Path(config_env)
     if not source_config_path.exists():
@@ -29,7 +29,7 @@ def test_live_bigquery_snapshot_plan_and_check(tmp_path: Path, monkeypatch) -> N
     runner = CliRunner()
     monkeypatch.chdir(tmp_path)
 
-    local_config_path = tmp_path / "dataguard.yaml"
+    local_config_path = tmp_path / "verixa.yaml"
     local_config_path.write_text(
         source_config_path.read_text(encoding="utf-8"),
         encoding="utf-8",
@@ -43,13 +43,29 @@ def test_live_bigquery_snapshot_plan_and_check(tmp_path: Path, monkeypatch) -> N
     snapshot_payload = json.loads(snapshot_result.stdout)
     assert snapshot_payload["summary"]["sources_captured"] >= 1
 
-    plan_result = runner.invoke(
+    validate_result = runner.invoke(
         app,
-        ["plan", "--config", str(local_config_path), "--format", "json"],
+        ["validate", "--config", str(local_config_path), "--format", "json"],
     )
-    assert plan_result.exit_code == 0, plan_result.output
-    plan_payload = json.loads(plan_result.stdout)
-    assert plan_payload["summary"]["sources_checked"] >= 1
+    assert validate_result.exit_code == 0, validate_result.output
+    validate_payload = json.loads(validate_result.stdout)
+    assert validate_payload["summary"]["sources_checked"] >= 1
+
+    diff_result = runner.invoke(
+        app,
+        ["diff", "--config", str(local_config_path), "--format", "json"],
+    )
+    assert diff_result.exit_code == 0, diff_result.output
+    diff_payload = json.loads(diff_result.stdout)
+    assert diff_payload["summary"]["sources_checked"] >= 1
+
+    cost_result = runner.invoke(
+        app,
+        ["cost", "diff", "--config", str(local_config_path), "--format", "json"],
+    )
+    assert cost_result.exit_code == 0, cost_result.output
+    cost_payload = json.loads(cost_result.stdout)
+    assert cost_payload["summary"]["sources_estimated"] >= 1
 
     check_result = runner.invoke(
         app,

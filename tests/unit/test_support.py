@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from dataguard.snapshot.models import (
+from verixa.snapshot.models import (
     AcceptedValuesSnapshot,
     FreshnessSnapshot,
     SourceSnapshot,

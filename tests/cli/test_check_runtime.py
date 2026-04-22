@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typer.testing import CliRunner
 
-from dataguard.cli.app import app
-from dataguard.storage.filesystem import StorageError
+from verixa.cli.app import app
+from verixa.storage.filesystem import StorageError
 
 
 def test_check_command_returns_runtime_error_when_baseline_is_missing(monkeypatch) -> None:
@@ -12,7 +12,7 @@ def test_check_command_returns_runtime_error_when_baseline_is_missing(monkeypatc
     def _raise_missing_baseline(config, risk_path=None, source_names=()):  # noqa: ANN001
         raise StorageError("baseline missing")
 
-    monkeypatch.setattr("dataguard.cli.app.run_check", _raise_missing_baseline)
+    monkeypatch.setattr("verixa.cli.app.run_check", _raise_missing_baseline)
 
     result = runner.invoke(app, ["check", "--fail-on-error"])
 
@@ -26,7 +26,7 @@ def test_check_command_can_emit_json_runtime_errors(monkeypatch) -> None:
     def _raise_missing_baseline(config, risk_path=None, source_names=()):  # noqa: ANN001
         raise StorageError("baseline missing")
 
-    monkeypatch.setattr("dataguard.cli.app.run_check", _raise_missing_baseline)
+    monkeypatch.setattr("verixa.cli.app.run_check", _raise_missing_baseline)
 
     result = runner.invoke(app, ["check", "--fail-on-error", "--format", "json"])
 

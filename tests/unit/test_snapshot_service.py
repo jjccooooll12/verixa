@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from dataguard.connectors.base import SourceCaptureRequest, WarehouseConnector
-from dataguard.contracts.models import (
+from verixa.connectors.base import SourceCaptureRequest, WarehouseConnector
+from verixa.contracts.models import (
     AcceptedValuesTest,
     FreshnessConfig,
     NoNullsTest,
@@ -9,8 +9,8 @@ from dataguard.contracts.models import (
     SourceContract,
     WarehouseConfig,
 )
-from dataguard.snapshot.models import SourceSnapshot
-from dataguard.snapshot.service import SnapshotService
+from verixa.snapshot.models import SourceSnapshot
+from verixa.snapshot.service import SnapshotService
 from tests.unit.test_support import make_source_snapshot
 
 
@@ -34,6 +34,12 @@ class _RecordingConnector(WarehouseConnector):
     ) -> int:
         self.estimate_calls.append((source.name, capture_request))
         return 1024
+
+    def check_auth(self) -> tuple[bool, str]:
+        return True, "ok"
+
+    def check_source_access(self, source: SourceContract) -> tuple[bool, str]:
+        return True, source.table
 
 
 def _make_project_config() -> ProjectConfig:

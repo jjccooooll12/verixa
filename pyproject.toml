@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "dataguard"
+name = "verixa"
 version = "0.1.0"
-description = "Developer-first Data CI for warehouse source tables"
+description = "Developer-first Data CI for warehouse source contracts"
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [{ name = "OpenAI Codex" }]
@@ -21,7 +21,7 @@ dev = [
 ]
 
 [project.scripts]
-dataguard = "dataguard.cli.app:main"
+verixa = "verixa.cli.app:main"
 
 [tool.setuptools.package-dir]
 "" = "src"

@@ -2,15 +2,15 @@ from __future__ import annotations
 
 from typer.testing import CliRunner
 
-from dataguard.cli.app import app
-from dataguard.diff.models import DiffResult, Finding
+from verixa.cli.app import app
+from verixa.diff.models import DiffResult, Finding
 
 
 def test_check_command_does_not_fail_on_warning_only_results(monkeypatch) -> None:
     runner = CliRunner()
 
     monkeypatch.setattr(
-        "dataguard.cli.app.run_check",
+        "verixa.cli.app.run_check",
         lambda config, risk_path=None, source_names=(): DiffResult(
             findings=(
                 Finding(
@@ -35,7 +35,7 @@ def test_check_command_can_fail_on_warning_when_requested(monkeypatch) -> None:
     runner = CliRunner()
 
     monkeypatch.setattr(
-        "dataguard.cli.app.run_check",
+        "verixa.cli.app.run_check",
         lambda config, risk_path=None, source_names=(): DiffResult(
             findings=(
                 Finding(
@@ -59,7 +59,7 @@ def test_check_command_fails_when_warning_policy_sources_exist(monkeypatch) -> N
     runner = CliRunner()
 
     monkeypatch.setattr(
-        "dataguard.cli.app.run_check",
+        "verixa.cli.app.run_check",
         lambda config, risk_path=None, source_names=(): DiffResult(
             findings=(
                 Finding(
@@ -84,7 +84,7 @@ def test_check_command_can_emit_json_output(monkeypatch) -> None:
     runner = CliRunner()
 
     monkeypatch.setattr(
-        "dataguard.cli.app.run_check",
+        "verixa.cli.app.run_check",
         lambda config, risk_path=None, source_names=(): DiffResult(
             findings=(
                 Finding(

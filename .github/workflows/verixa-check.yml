@@ -1,0 +1,49 @@
+name: Verixa Check
+
+'on':
+  workflow_dispatch:
+
+jobs:
+  verixa-check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Verixa
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev]
+
+      - name: Validate baseline exists
+        run: |
+          test -f .verixa/baseline.json || {
+            echo "Missing .verixa/baseline.json. Commit it or restore it before running Verixa check.";
+            exit 1;
+          }
+
+      - name: Write Google credentials
+        env:
+          GCP_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          test -n "$GCP_SERVICE_ACCOUNT_KEY_JSON" || {
+            echo "Missing secret GCP_SERVICE_ACCOUNT_KEY_JSON";
+            exit 1;
+          }
+          printf '%s' "$GCP_SERVICE_ACCOUNT_KEY_JSON" > "$RUNNER_TEMP/gcp-key.json"
+          echo "GOOGLE_APPLICATION_CREDENTIALS=$RUNNER_TEMP/gcp-key.json" >> "$GITHUB_ENV"
+
+      - name: Run Verixa check
+        run: verixa check --fail-on-error --format json > verixa-report.json
+
+      - name: Upload Verixa report
+        uses: actions/upload-artifact@v4
+        with:
+          name: verixa-report
+          path: verixa-report.json

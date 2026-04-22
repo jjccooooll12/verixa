@@ -3,17 +3,17 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
-from dataguard.snapshot.models import (
+from verixa.snapshot.models import (
     AcceptedValuesSnapshot,
     FreshnessSnapshot,
     ProjectSnapshot,
     SourceSnapshot,
 )
-from dataguard.storage.filesystem import SnapshotStore
+from verixa.storage.filesystem import SnapshotStore
 
 
 def test_snapshot_store_round_trip(tmp_path: Path) -> None:
-    store = SnapshotStore(tmp_path / ".dataguard")
+    store = SnapshotStore(tmp_path / ".verixa")
     snapshot = ProjectSnapshot(
         warehouse_kind="bigquery",
         generated_at=datetime(2026, 4, 22, 11, 0, tzinfo=timezone.utc),
@@ -50,7 +50,7 @@ def test_snapshot_store_round_trip(tmp_path: Path) -> None:
 
 
 def test_snapshot_store_merges_selected_sources_into_existing_baseline(tmp_path: Path) -> None:
-    store = SnapshotStore(tmp_path / ".dataguard")
+    store = SnapshotStore(tmp_path / ".verixa")
     baseline = ProjectSnapshot(
         warehouse_kind="bigquery",
         generated_at=datetime(2026, 4, 22, 11, 0, tzinfo=timezone.utc),

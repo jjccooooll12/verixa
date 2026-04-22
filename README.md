@@ -1,39 +1,36 @@
-# DataGuard
+# Verixa
 
-DataGuard is a developer-first Data CI tool for warehouse source tables.
+Verixa is a developer-first Data CI CLI for warehouse source tables.
 
-The product focus is pre-deploy safety, not reactive monitoring. DataGuard compares declared source contracts, a stored baseline snapshot, and current warehouse state to surface likely breakages before a change ships.
+It is built for pre-deploy safety, not reactive monitoring. Verixa compares declared source contracts, a stored baseline snapshot, and current warehouse state to surface likely breakages before a change ships.
 
 ## Positioning
-DataGuard is:
-- contract-first,
-- diff-driven,
-- warehouse-native,
-- CLI-first,
-- CI-friendly.
+Verixa is:
+- contract-first
+- diff-driven
+- warehouse-native
+- CLI-first
+- CI-friendly
 
-DataGuard is not:
-- a dashboard-first observability platform,
-- a lineage visualization tool,
-- anomaly-detection infrastructure,
-- just a linter.
+Verixa is not:
+- a dashboard-first observability platform
+- a lineage visualization tool
+- anomaly-detection infrastructure
+- just a linter
 
-## MVP Status
-Implemented in the current repo:
-- Python package scaffold with `src/` layout,
-- Typer-based CLI,
-- YAML config loader and typed contract models,
-- BigQuery connector using the official client library,
-- deterministic local baseline storage,
-- contract checks and baseline drift heuristics,
-- configurable project-level and source-level drift thresholds,
-- text and JSON output modes,
-- mocked unit and CLI workflow tests,
-- an opt-in live BigQuery smoke harness,
-- a GitHub Actions example workflow for JSON-based checks.
+## Current Scope
+Implemented now:
+- BigQuery-only v1
+- local deterministic baseline snapshots
+- contract checks and baseline drift heuristics
+- text and JSON output
+- source scoping with `--source`
+- byte estimation with `verixa cost` and `--estimate-bytes`
+- status and diagnostic commands
+- CI-friendly exit codes
 
-Current test status:
-- `57 passed, 1 skipped` on the local suite.
+Current local suite status:
+- `65 passed, 1 skipped`
 
 ## Install
 
@@ -42,35 +39,57 @@ Current test status:
 pip install -e .[dev]
 ```
 
-### Run the CLI without installing
+### Run without installing
 ```bash
-PYTHONPATH=src python -m dataguard --help
+PYTHONPATH=src python -m verixa --help
 ```
 
 ## BigQuery Authentication
-DataGuard uses the official Google Cloud BigQuery Python client.
+Verixa uses the official Google Cloud BigQuery Python client.
 
-Expected auth for local or CI usage:
-- Application Default Credentials,
-- or `GOOGLE_APPLICATION_CREDENTIALS` pointing at a service account key,
-- or a workload identity setup that the BigQuery client can use directly.
+Supported auth paths:
+- Application Default Credentials
+- `GOOGLE_APPLICATION_CREDENTIALS` pointing at a service account key
+- workload identity supported by the BigQuery client
 
 The CLI does not manage auth for you.
+
+## Core Workflow
+Recommended workflow:
+
+```bash
+verixa init
+verixa validate
+verixa snapshot
+verixa diff
+verixa check --fail-on-error
+```
+
+Command intent:
+- `verixa validate`: check current live data against declared contracts
+- `verixa snapshot`: capture the baseline you want future diffs to compare against
+- `verixa diff`: compare current live data to both the contract and the stored baseline
+- `verixa check`: CI gate for `validate + diff` with exit codes
+
+Compatibility aliases for v0.x:
+- `verixa plan` -> `verixa diff`
+- `verixa test` -> `verixa validate`
 
 ## Quick Start
 
 ### 1. Initialize
 ```bash
-dataguard init
+verixa init
 ```
 
 This creates:
-- `dataguard.yaml`
-- `dataguard.risk.yaml.example`
-- `.dataguard/`
+- `verixa.yaml`
+- `verixa.risk.yaml.example`
+- `.verixa/`
 
-### 2. Define one or more source contracts
-Example `dataguard.yaml`:
+
+### 2. Define source contracts
+Example `verixa.yaml`:
 
 ```yaml
 warehouse:
@@ -119,104 +138,170 @@ sources:
 
 Notes:
 - `schema` can be a mapping or a list of one-item mappings.
-- `freshness` must be explicit in v1: `column` plus `max_age`.
-- `scan` is optional. Use it to bound expensive stats queries to a recent timestamp window.
-- `scan.timestamp_column` can use `timestamp`, `datetime`, or `date` schema types.
-- `check.fail_on_warning` is optional. Use it to make warnings fail CI for a specific source.
+- `freshness` is explicit in v1: `column` plus `max_age`.
+- `scan` is optional. Use it to bound expensive stats queries to a recent time window.
+- `scan.timestamp_column` supports `timestamp`, `datetime`, and `date` columns.
+- top-level `rules` is optional.
+- per-source `rules` overrides only the thresholds specified for that source.
+- `check.fail_on_warning` is optional at project or source scope.
 - `baseline.warning_age` is optional. Set it to `null` to disable stale-baseline warnings.
 - test columns must be declared in `schema`.
-- top-level `rules` is optional. Omit it to use the built-in defaults.
-- per-source `rules` is also optional. It overrides only the thresholds specified for that source.
 
-### 3. Capture a baseline
+### 3. Validate contracts against live data
 ```bash
-dataguard snapshot
+verixa validate
 ```
 
-To refresh only selected sources while keeping the rest of the stored baseline:
+Target only touched sources:
 
 ```bash
-dataguard snapshot --source stripe.transactions
+verixa validate --source stripe.transactions
 ```
 
-This stores a deterministic baseline file at:
-- `.dataguard/baseline.json`
-
-Captured fields in the baseline:
-- current schema,
-- row count,
-- null rates for declared columns,
-- freshness metadata,
-- accepted-values results.
-
-### 4. Run a pre-deploy plan
+### 4. Capture a baseline
 ```bash
-dataguard plan
+verixa snapshot
 ```
 
-To limit a run to touched sources:
+Refresh only selected sources while preserving the rest of the stored baseline:
 
 ```bash
-dataguard plan --source stripe.transactions
+verixa snapshot --source stripe.transactions
 ```
 
-If you want a byte estimate before or alongside the real run:
+This writes a deterministic baseline file at:
+- `.verixa/baseline.json`
 
+### 5. Diff current data against contract and baseline
 ```bash
-dataguard plan --source stripe.transactions --estimate-bytes
+verixa diff
 ```
 
-The plan compares current state to both:
-- the declared contract,
-- the stored baseline snapshot.
+Target only touched sources:
 
-### 5. Run contract checks directly
 ```bash
-dataguard test
+verixa diff --source stripe.transactions
 ```
 
-### 6. Run CI validation
+### 6. Gate CI
 ```bash
-dataguard check --fail-on-error
+verixa check --fail-on-error
 ```
 
 ## Commands
 
-### `dataguard init`
+### `verixa init`
 Creates starter files and the local state directory.
 
-### `dataguard snapshot`
+### `verixa snapshot`
 Queries BigQuery and writes the baseline snapshot.
-When `--source` is used, the selected sources are merged into the existing baseline instead of replacing unrelated sources.
 
-### `dataguard plan`
+Behavior:
+- targeted runs with `--source` merge into the existing baseline instead of dropping unrelated sources
+- `--format json` is supported
+- `--estimate-bytes` can attach dry-run estimates for the snapshot query shape
+
+### `verixa diff`
 Requires an existing baseline snapshot and shows likely breakages before deploy, including:
-- removed or changed columns,
-- null-rate spikes,
-- row-count drops or spikes,
-- freshness violations,
-- accepted-values failures,
-- `no_nulls` violations.
+- removed or changed columns
+- null-rate spikes
+- row-count drops or spikes
+- freshness violations
+- accepted-values failures
+- `no_nulls` violations
+- stale baseline warnings
 
-Common option:
-- `--source <name>` can be repeated to limit `snapshot`, `plan`, `test`, and `check` to specific logical sources.
-- `--estimate-bytes` adds a BigQuery dry-run estimate for the live stats queries used by `snapshot`, `plan`, `test`, and `check`.
+Behavior:
+- compares current state to both the declared contract and stored baseline
+- supports `--source`
+- supports `--format json`
+- supports `--estimate-bytes`
 
-### `dataguard test`
+### `verixa validate`
 Runs contract checks against current live data without comparing to the baseline.
-It only queries the columns needed for active contract checks, so schema-only or narrow contracts stay cheaper and faster than full drift plans.
 
-### `dataguard check --fail-on-error`
-Runs the CI-friendly validation path and exits non-zero when error-severity findings exist.
+Behavior:
+- queries only the columns needed for active contract checks
+- supports `--source`
+- supports `--format json`
+- supports `--estimate-bytes`
 
-Additional behavior:
-- `--fail-on-warning` makes any warning fail the command.
-- `sources.<name>.check.fail_on_warning: true` makes warnings fail CI for only that source, even without the global flag.
+### `verixa check`
+Runs the CI-friendly validation path.
+
+Behavior:
+- combines contract validation and baseline drift checks
+- supports `--source`
+- supports `--format json`
+- supports `--estimate-bytes`
+- supports `--fail-on-error`
+- supports `--fail-on-warning`
+- honors `sources.<name>.check.fail_on_warning: true`
 
 Exit codes:
-- `0`: success or warnings only,
-- `1`: error findings with `--fail-on-error`, warnings alone still exit `0`,
-- `2`: runtime, auth, config, or storage failure.
+- `0`: success or warnings only
+- `1`: findings matched the configured failure policy
+- `2`: runtime, auth, config, or storage failure
+
+### `verixa status`
+Shows:
+- config path found or missing
+- baseline path found or missing
+- baseline age
+- warehouse auth status
+- configured sources
+
+Example:
+```bash
+verixa status
+```
+
+### `verixa doctor`
+Runs diagnostics for:
+- config validity
+- baseline readability
+- warehouse auth
+- per-source metadata access
+
+Example:
+```bash
+verixa doctor
+```
+
+### `verixa explain <source>`
+Shows one source contract in a human-readable form:
+- schema
+- freshness
+- tests
+- thresholds
+- scan window
+- warning policy
+
+Examples:
+```bash
+verixa explain stripe.transactions
+verixa explain stripe.transactions --format json
+```
+
+### `verixa cost`
+Estimates BigQuery bytes processed for a workflow step.
+
+Examples:
+```bash
+verixa cost diff
+verixa cost validate --source stripe.transactions
+verixa cost check --format json
+```
+
+Supported steps:
+- `snapshot`
+- `diff`
+- `validate`
+- `check`
+
+Legacy aliases are also accepted:
+- `plan`
+- `test`
 
 ## JSON Output
 All runtime commands except `init` support `--format json`.
@@ -224,11 +309,11 @@ All runtime commands except `init` support `--format json`.
 Examples:
 
 ```bash
-dataguard plan --format json
+verixa diff --format json
 ```
 
 ```bash
-dataguard check --fail-on-error --format json
+verixa check --fail-on-error --format json
 ```
 
 Example JSON shape for `check`:
@@ -264,144 +349,68 @@ Example JSON shape for `check`:
 }
 ```
 
-Runtime errors also emit JSON when `--format json` is used.
-
-## Threshold Configuration
-Thresholds can be configured at two levels:
-- project-level under top-level `rules`,
-- source-level under `sources.<name>.rules`.
-
-Defaults:
-- `null_rate_change.warning_delta = 0.01`
-- `null_rate_change.error_delta = 0.05`
-- `row_count_change.warning_drop_ratio = 0.20`
-- `row_count_change.error_drop_ratio = 0.50`
-- `row_count_change.warning_growth_ratio = 0.20`
-- `row_count_change.error_growth_ratio = 1.00`
-- `baseline.warning_age = 168h`
-- `check.fail_on_warning = false`
-
-Interpretation:
-- a null-rate delta of `0.05` means a 5 percentage point increase,
-- a row-count growth ratio of `1.00` means 100% growth over baseline.
-
-## Example Plan Output
+## Output Example
+Example `verixa diff` output:
 
 ```text
-stripe.transactions
-- ERROR: column removed: currency
-- ERROR: freshness violated: latest row is 2h 14m old
-- WARNING: null rate increased on amount: 0.8% -> 9.4%
+Diff
+
+ERROR stripe.transactions
+- column removed: currency
+- null rate increased on amount: 0.8% -> 9.4%
+- freshness violated: latest row is 2h 14m old
 Risk:
 - likely to break finance models depending on currency
 - likely undercount in recent dashboards
-
-Summary: 2 error(s), 1 warning(s), 1 source(s) checked
 ```
 
-## Optional Risk Mapping
-If you create `dataguard.risk.yaml`, DataGuard will attach downstream hints to relevant findings.
+## Cost and Performance Notes
+Verixa is intentionally cost-conscious.
 
-Example:
+Current behavior:
+- schema and basic table metadata come from low-cost BigQuery metadata APIs where possible
+- `validate` narrows live queries to contract-relevant columns instead of always scanning full declared schema
+- accepted-values samples are deterministic for CI diffability
+- source capture runs in conservative parallelism to reduce wall-clock time on multi-source runs
+- scan windows can bound expensive stats queries to recent `TIMESTAMP`, `DATETIME`, or `DATE` slices
+- `verixa cost` and `--estimate-bytes` use BigQuery dry runs to estimate query cost
 
-```yaml
-sources:
-  stripe.transactions:
-    general:
-      - likely undercount in recent dashboards
-    columns:
-      currency:
-        - likely to break finance models depending on currency
-```
+Important tradeoff:
+- when `scan` is configured, row-count and null-rate drift are measured over that lookback window, not the full table
 
-## GitHub Actions Example
-The repo includes an example workflow at:
-- `.github/workflows/dataguard-check.yml`
+## CI Example
+A minimal CI flow is:
+1. install the package
+2. authenticate to Google Cloud
+3. restore or check out the baseline snapshot
+4. run `verixa check --fail-on-error --format json`
+5. upload the JSON report if needed
 
-It:
-- installs DataGuard,
-- checks that `.dataguard/baseline.json` exists,
-- loads a GCP service account key from `GCP_SERVICE_ACCOUNT_KEY_JSON`,
-- runs `dataguard check --fail-on-error --format json`,
-- uploads `dataguard-report.json` as an artifact.
+Example workflow:
+- `.github/workflows/verixa-check.yml`
 
-It is configured for `workflow_dispatch`, so it is manual by default.
-
-## Live BigQuery Smoke Harness
-The repo includes an opt-in smoke test at:
+## Live Validation
+The repo includes an opt-in live BigQuery smoke test:
 - `tests/integration/test_live_bigquery_smoke.py`
 
-Enable it only when all prerequisites exist:
+Enable it with:
+- `VERIXA_RUN_LIVE_BIGQUERY=1`
+- `VERIXA_LIVE_CONFIG=/path/to/verixa.yaml`
+- working BigQuery credentials
+- `google-cloud-bigquery` installed
 
-```bash
-export DATAGUARD_RUN_LIVE_BIGQUERY=1
-export DATAGUARD_LIVE_CONFIG=/path/to/dataguard.yaml
-PYTHONPATH=src pytest -q tests/integration/test_live_bigquery_smoke.py
-```
-
-Requirements:
-- working BigQuery credentials,
-- `google-cloud-bigquery` installed,
-- a real config file that points at accessible tables.
-
-The live smoke test is skipped by default.
-
-This repository has also been validated in this workspace against a real BigQuery project (`dataguard-494111`) using a mock dataset loaded into BigQuery for end-to-end `snapshot`, `plan`, and `check` verification.
-
-## Cost and Query Tradeoffs
-DataGuard is intentionally cost-conscious, but it still queries live warehouse data.
-
-Current v1 behavior:
-- schema comes from table metadata,
-- row count comes from table metadata when no stats query is needed,
-- row count becomes exact when a stats query already scans the table,
-- null-rate, freshness, and accepted-values checks use lightweight aggregate queries over only the required columns.
-- `dataguard test` narrows live queries to contract-relevant columns instead of always scanning the full declared schema.
-- multi-source captures run in parallel with a conservative worker pool to reduce wall-clock time without overloading the default BigQuery client connection pool.
-- optional source-level `scan` windows can bound stats queries to a recent timestamp range for large raw tables.
-- `--estimate-bytes` issues an extra BigQuery dry-run request per source and reports `total_bytes_processed` for the live stats query shape.
-
-Tradeoffs:
-- large unpartitioned tables can still be expensive to scan,
-- metadata row counts may lag for streaming-heavy tables,
-- when `scan` is configured, row-count and null-rate comparisons apply to the bounded lookback window rather than the full table,
-- a stale baseline warning does not fail CI by itself, but it reduces trust in drift findings until a fresh snapshot is captured,
-- dry-run estimates add latency because they are extra API calls,
-- v1 supports only simple column identifiers, not nested fields.
-
-## CI Usage
-A minimal CI job should:
-1. install DataGuard,
-2. authenticate to Google Cloud,
-3. restore or check out `.dataguard/baseline.json`,
-4. run `dataguard check --fail-on-error`.
-
-If machine-readable output is needed:
-```bash
-dataguard check --fail-on-error --format json
-```
-
-## Development
-Run the default suite:
-
-```bash
-PYTHONPATH=src pytest -q
-```
-
-Run the opt-in live smoke test only when configured:
-
-```bash
-PYTHONPATH=src pytest -q tests/integration/test_live_bigquery_smoke.py
-```
+This workspace has been validated against a real BigQuery project using a mock dataset loaded into BigQuery for end-to-end `snapshot`, `validate`, `diff`, `cost`, and `check` verification.
 
 ## Known Limitations
-- BigQuery is the only supported warehouse in v1.
-- The default test suite does not hit a live BigQuery project.
-- The live smoke harness is opt-in and skipped by default to avoid accidental live warehouse usage.
-- There is no automatic lineage import yet.
-- There is no hosted backend or shared state layer.
+Current v1 limitations:
+- BigQuery only
+- no hosted backend
+- no lineage import or graph UI
+- no Snowflake connector yet
+- no Databricks connector yet
+- no numeric distribution summaries yet
 
-## Repository Docs
-- `implementation_plan.md`: living implementation checklist.
-- `workflow.md`: product and development workflow.
-- `project_structure.md`: implemented package structure and module responsibilities.
+## Internal Layout Note
+The public CLI and package branding is now Verixa.
+
+The implementation package also lives under `src/verixa/`, so the public package name and internal module layout now match.

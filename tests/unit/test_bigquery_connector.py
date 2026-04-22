@@ -7,9 +7,9 @@ from unittest.mock import patch
 
 import pytest
 
-from dataguard.connectors.base import ConnectorError, SourceCaptureRequest
-from dataguard.connectors.bigquery.connector import BigQueryConnector
-from dataguard.contracts.models import (
+from verixa.connectors.base import ConnectorError, SourceCaptureRequest
+from verixa.connectors.bigquery.connector import BigQueryConnector
+from verixa.contracts.models import (
     AcceptedValuesTest,
     FreshnessConfig,
     NoNullsTest,

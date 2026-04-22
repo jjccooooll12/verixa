@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from dataguard.contracts.models import AcceptedValuesTest, SourceContract
-from dataguard.rules.accepted_values import check_accepted_values
+from verixa.contracts.models import AcceptedValuesTest, SourceContract
+from verixa.rules.accepted_values import check_accepted_values
 from tests.unit.test_support import make_accepted_values_snapshot, make_source_snapshot
 
 

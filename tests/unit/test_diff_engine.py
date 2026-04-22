@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from dataguard.contracts.models import (
+from verixa.contracts.models import (
     BaselineConfig,
     CheckConfig,
     ProjectConfig,
@@ -11,9 +11,9 @@ from dataguard.contracts.models import (
     SourceContract,
     WarehouseConfig,
 )
-from dataguard.diff.engine import build_plan_result
-from dataguard.diff.risk import RiskConfig, SourceRiskHints
-from dataguard.snapshot.models import ProjectSnapshot
+from verixa.diff.engine import build_plan_result
+from verixa.diff.risk import RiskConfig, SourceRiskHints
+from verixa.snapshot.models import ProjectSnapshot
 from tests.unit.test_support import make_source_snapshot
 
 
@@ -139,7 +139,7 @@ def test_build_plan_result_warns_when_baseline_is_stale() -> None:
         finding for finding in result.findings if finding.code == "baseline_stale"
     )
     assert stale_finding.source_name == "baseline"
-    assert "refresh it with 'dataguard snapshot'" in stale_finding.message
+    assert "refresh it with 'verixa snapshot'" in stale_finding.message
 
 
 def test_build_plan_result_tracks_warning_policy_sources() -> None:

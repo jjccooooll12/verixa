@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from dataguard.contracts.models import RowCountChangeThresholds, SourceContract
-from dataguard.rules.row_count_change import check_row_count_change
+from verixa.contracts.models import RowCountChangeThresholds, SourceContract
+from verixa.rules.row_count_change import check_row_count_change
 from tests.unit.test_support import make_source_snapshot
 
 

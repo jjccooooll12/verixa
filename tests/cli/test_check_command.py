@@ -2,15 +2,15 @@ from __future__ import annotations
 
 from typer.testing import CliRunner
 
-from dataguard.cli.app import app
-from dataguard.diff.models import DiffResult, Finding
+from verixa.cli.app import app
+from verixa.diff.models import DiffResult, Finding
 
 
 def test_check_command_fails_when_requested_and_errors_exist(monkeypatch) -> None:
     runner = CliRunner()
 
     monkeypatch.setattr(
-        "dataguard.cli.app.run_check",
+        "verixa.cli.app.run_check",
         lambda config, risk_path=None, source_names=(): DiffResult(
             findings=(
                 Finding(
@@ -39,7 +39,7 @@ def test_check_command_passes_source_selection(monkeypatch) -> None:
         seen["source_names"] = source_names
         return DiffResult(findings=(), sources_checked=1, used_baseline=True)
 
-    monkeypatch.setattr("dataguard.cli.app.run_check", _run_check)
+    monkeypatch.setattr("verixa.cli.app.run_check", _run_check)
 
     result = runner.invoke(app, ["check", "--source", "stripe.transactions"])
 
@@ -51,11 +51,11 @@ def test_check_command_can_include_estimated_bytes(monkeypatch) -> None:
     runner = CliRunner()
 
     monkeypatch.setattr(
-        "dataguard.cli.app._estimate_bytes",
-        lambda config, source_names, mode: {"stripe.transactions": 2048},
+        "verixa.cli.app._estimate_bytes",
+        lambda config, source_names, command: {"stripe.transactions": 2048},
     )
     monkeypatch.setattr(
-        "dataguard.cli.app.run_check",
+        "verixa.cli.app.run_check",
         lambda config, risk_path=None, source_names=(): DiffResult(
             findings=(),
             sources_checked=1,

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from dataguard.connectors.bigquery.queries import build_stats_query
-from dataguard.connectors.bigquery.types import BigQueryTableRef
-from dataguard.contracts.models import AcceptedValuesTest
+from verixa.connectors.bigquery.queries import build_stats_query
+from verixa.connectors.bigquery.types import BigQueryTableRef
+from verixa.contracts.models import AcceptedValuesTest
 
 
 def test_build_stats_query_includes_all_requested_checks() -> None:

@@ -1,0 +1,7 @@
+sources:
+  stripe.transactions:
+    general:
+      - likely undercount in recent dashboards
+    columns:
+      currency:
+        - likely to break finance models depending on currency

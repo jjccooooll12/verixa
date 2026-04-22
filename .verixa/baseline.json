@@ -1,0 +1,37 @@
+{
+  "generated_at": "2026-04-22T17:47:03.645370Z",
+  "sources": {
+    "stripe.transactions": {
+      "accepted_values": {
+        "currency": {
+          "column": "currency",
+          "invalid_count": 0,
+          "invalid_examples": []
+        }
+      },
+      "captured_at": "2026-04-22T17:47:00.936539Z",
+      "freshness": {
+        "age_seconds": 23520,
+        "column": "created_at",
+        "latest_value": "2026-04-22T11:15:00Z",
+        "max_age_seconds": 86400
+      },
+      "null_rates": {
+        "amount": 0.0,
+        "created_at": 0.0,
+        "currency": 0.0,
+        "transaction_id": 0.0
+      },
+      "row_count": 6,
+      "schema": {
+        "amount": "FLOAT64",
+        "created_at": "TIMESTAMP",
+        "currency": "STRING",
+        "transaction_id": "STRING"
+      },
+      "source_name": "stripe.transactions",
+      "table": "dataguard-494111.verixa_demo.stripe_transactions"
+    }
+  },
+  "warehouse_kind": "bigquery"
+}

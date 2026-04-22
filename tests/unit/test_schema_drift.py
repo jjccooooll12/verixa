@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from dataguard.contracts.models import SourceContract
-from dataguard.rules.schema_drift import check_schema_drift
+from verixa.contracts.models import SourceContract
+from verixa.rules.schema_drift import check_schema_drift
 from tests.unit.test_support import make_source_snapshot
 
 

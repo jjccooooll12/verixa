@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from dataguard.contracts.models import NoNullsTest, SourceContract
-from dataguard.rules.no_nulls import check_no_nulls
+from verixa.contracts.models import NoNullsTest, SourceContract
+from verixa.rules.no_nulls import check_no_nulls
 from tests.unit.test_support import make_source_snapshot
 
 

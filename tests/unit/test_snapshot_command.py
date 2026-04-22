@@ -3,9 +3,9 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
-from dataguard.cli.snapshot import run_snapshot
-from dataguard.output.console import render_snapshot_summary
-from dataguard.snapshot.models import ProjectSnapshot, SourceSnapshot
+from verixa.cli.snapshot import run_snapshot
+from verixa.output.console import render_snapshot_summary
+from verixa.snapshot.models import ProjectSnapshot, SourceSnapshot
 
 
 class _FakeConnector:
@@ -40,7 +40,7 @@ class _FakeSnapshotService:
 
 def test_run_snapshot_writes_baseline_file(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr("dataguard.cli.snapshot.BigQueryConnector", _FakeConnector)
+    monkeypatch.setattr("verixa.cli.snapshot.BigQueryConnector", _FakeConnector)
     created_services: list[_FakeSnapshotService] = []
 
     def _service_factory(connector):  # noqa: ANN001
@@ -48,9 +48,9 @@ def test_run_snapshot_writes_baseline_file(tmp_path: Path, monkeypatch) -> None:
         created_services.append(service)
         return service
 
-    monkeypatch.setattr("dataguard.cli.snapshot.SnapshotService", _service_factory)
+    monkeypatch.setattr("verixa.cli.snapshot.SnapshotService", _service_factory)
 
-    config_path = tmp_path / "dataguard.yaml"
+    config_path = tmp_path / "verixa.yaml"
     config_path.write_text(
         """
 warehouse:
@@ -71,6 +71,6 @@ sources:
     output = render_snapshot_summary(snapshot, baseline_path)
 
     assert "Captured baseline snapshot" in output
-    assert baseline_path == Path(".dataguard") / "baseline.json"
+    assert baseline_path == Path(".verixa") / "baseline.json"
     assert baseline_path.exists()
     assert created_services[0].mode_seen == "snapshot"

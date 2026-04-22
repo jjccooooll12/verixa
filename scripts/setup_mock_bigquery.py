@@ -1,9 +1,10 @@
-"""Create a small mock BigQuery dataset and table for DataGuard demos."""
+"""Create a small mock BigQuery dataset and table for Verixa demos."""
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 from google.cloud import bigquery
@@ -11,8 +12,12 @@ from google.cloud import bigquery
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--project", default="dataguard-494111", help="GCP project ID")
-    parser.add_argument("--dataset", default="dataguard_demo", help="BigQuery dataset ID")
+    parser.add_argument(
+        "--project",
+        default=os.getenv("VERIXA_GCP_PROJECT"),
+        help="GCP project ID. Defaults to VERIXA_GCP_PROJECT when set.",
+    )
+    parser.add_argument("--dataset", default="verixa_demo", help="BigQuery dataset ID")
     parser.add_argument(
         "--table",
         default="stripe_transactions",
@@ -28,7 +33,10 @@ def parse_args() -> argparse.Namespace:
         default="examples/mock_data/stripe_transactions.jsonl",
         help="Path to newline-delimited JSON rows",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if not args.project:
+        parser.error("--project is required unless VERIXA_GCP_PROJECT is set.")
+    return args
 
 
 def main() -> None:

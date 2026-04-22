@@ -10,6 +10,7 @@ DEFAULT_CONFIG = """warehouse:
   kind: bigquery
   project: your-gcp-project
   location: US
+  max_bytes_billed: 500MB
 
 rules:
   null_rate_change:
@@ -59,6 +60,15 @@ DEFAULT_RISK_CONFIG = """sources:
         - likely to break finance models depending on currency
 """
 
+DEFAULT_TARGETS_CONFIG = """paths:
+  models/staging/stripe/**/*.sql:
+    - stripe.transactions
+  models/marts/finance/**/*.sql:
+    - stripe.transactions
+  macros/shared/:
+    - stripe.transactions
+"""
+
 
 def init_project(force: bool = False) -> list[Path]:
     """Create starter Verixa config files and the local state directory."""
@@ -66,9 +76,10 @@ def init_project(force: bool = False) -> list[Path]:
     created_paths: list[Path] = []
     config_path = Path("verixa.yaml")
     risk_path = Path("verixa.risk.yaml.example")
+    targets_path = Path("verixa.targets.yaml.example")
     store = SnapshotStore()
 
-    for path in (config_path, risk_path):
+    for path in (config_path, risk_path, targets_path):
         if path.exists() and not force:
             raise FileExistsError(
                 f"'{path}' already exists. Use --force to overwrite starter files."
@@ -78,5 +89,6 @@ def init_project(force: bool = False) -> list[Path]:
 
     config_path.write_text(DEFAULT_CONFIG, encoding="utf-8")
     risk_path.write_text(DEFAULT_RISK_CONFIG, encoding="utf-8")
-    created_paths.extend([config_path, risk_path, store.baseline_path.parent])
+    targets_path.write_text(DEFAULT_TARGETS_CONFIG, encoding="utf-8")
+    created_paths.extend([config_path, risk_path, targets_path, store.baseline_path.parent])
     return created_paths

@@ -2,14 +2,22 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 from verixa.config.loader import load_config
+from verixa.connectors.base import WarehouseConnector
 from verixa.connectors.bigquery.connector import BigQueryConnector
+from verixa.contracts.models import ProjectConfig
 from verixa.diff.engine import build_test_result
 from verixa.diff.models import DiffResult
-from verixa.diff.risk import load_risk_config
+from verixa.diff.risk import RiskConfig, load_risk_config
 from verixa.snapshot.service import SnapshotService
+
+ConfigLoader = Callable[..., ProjectConfig]
+RiskLoader = Callable[[Path | None], RiskConfig | None]
+ConnectorFactory = Callable[..., WarehouseConnector]
+SnapshotServiceFactory = Callable[[WarehouseConnector], SnapshotService]
 
 
 def run_test(
@@ -17,12 +25,17 @@ def run_test(
     risk_path: Path | None = None,
     *,
     source_names: tuple[str, ...] = (),
+    max_bytes_billed: int | None = None,
+    config_loader: ConfigLoader = load_config,
+    risk_loader: RiskLoader = load_risk_config,
+    connector_factory: ConnectorFactory = BigQueryConnector,
+    snapshot_service_factory: SnapshotServiceFactory = SnapshotService,
 ) -> DiffResult:
     """Run contract checks against current live data."""
 
-    config = load_config(config_path, source_names=source_names)
-    risk_config = load_risk_config(risk_path)
-    connector = BigQueryConnector(config.warehouse)
-    service = SnapshotService(connector)
+    config = config_loader(config_path, source_names=source_names)
+    risk_config = risk_loader(risk_path)
+    connector = connector_factory(config.warehouse, max_bytes_billed=max_bytes_billed)
+    service = snapshot_service_factory(connector)
     current = service.capture(config, mode="test")
     return build_test_result(config, current, risk_config=risk_config)

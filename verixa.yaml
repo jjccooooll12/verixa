@@ -2,6 +2,7 @@ warehouse:
   kind: bigquery
   project: my-project
   location: US
+  max_bytes_billed: 500MB
 
 rules:
   null_rate_change:

@@ -13,7 +13,13 @@ def run_validate(
     risk_path: Path | None = None,
     *,
     source_names: tuple[str, ...] = (),
+    max_bytes_billed: int | None = None,
 ) -> DiffResult:
     """Run contract checks against current live data."""
 
-    return run_test(config_path=config_path, risk_path=risk_path, source_names=source_names)
+    return run_test(
+        config_path=config_path,
+        risk_path=risk_path,
+        source_names=source_names,
+        max_bytes_billed=max_bytes_billed,
+    )

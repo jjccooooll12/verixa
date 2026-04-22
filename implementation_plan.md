@@ -70,6 +70,7 @@ Build a local-first, developer-first Data CI CLI for BigQuery source tables that
 - [x] Keep hidden `plan` and `test` aliases for v0.x compatibility.
 - [x] Add common CLI options for config path and output behavior.
 - [x] Add repeatable `--source` filtering for targeted runs.
+- [x] Add automatic changed-file to source targeting for CI-oriented runs.
 - [x] Add optional `--estimate-bytes` dry-run query estimates.
 - [x] Add `--fail-on-warning` for stricter CI behavior.
 - [x] Add consistent error handling and non-zero exit behavior.
@@ -88,6 +89,7 @@ Build a local-first, developer-first Data CI CLI for BigQuery source tables that
 - [x] Narrow contract-only queries to the columns required by active checks.
 - [x] Keep accepted-values example output deterministic.
 - [x] Estimate live stats-query bytes with BigQuery dry runs when requested.
+- [x] Enforce optional max-bytes-billed ceilings for live BigQuery queries.
 - [x] Add auth and metadata reachability checks for `status` and `doctor`.
 - [x] Handle authentication and permission failures with useful messages.
 - [x] Document BigQuery cost and freshness tradeoffs.
@@ -143,6 +145,7 @@ Build a local-first, developer-first Data CI CLI for BigQuery source tables that
 - [x] Add machine-readable JSON output for snapshot, validate, diff, check, status, explain, and cost.
 - [x] Add machine-readable JSON runtime errors.
 - [x] Expose baseline age, auth status, and configured sources through `verixa status`.
+- [x] Expose configured `max_bytes_billed` through status, explain, and cost output.
 - [x] Expose config, baseline, auth, and source-access diagnostics through `verixa doctor`.
 
 ## Phase 10: Testing
@@ -163,6 +166,7 @@ Build a local-first, developer-first Data CI CLI for BigQuery source tables that
 - [x] Add tests for JSON output behavior.
 - [x] Add tests for the Verixa command surface and compatibility aliases.
 - [x] Add an opt-in live BigQuery smoke harness gated by environment variables.
+- [x] Refactor CLI and runner tests to use explicit dependency injection instead of module-level monkeypatching.
 
 ## Phase 11: Documentation
 - [x] Write README setup instructions.
@@ -211,8 +215,6 @@ Build a local-first, developer-first Data CI CLI for BigQuery source tables that
 - [ ] Automatic lineage import from dbt artifacts.
 - [ ] Hosted backend or shared team state.
 - [ ] Environment-specific snapshot files.
-- [ ] Automatic changed-file to source targeting.
-- [ ] Max-bytes-billed enforcement for live query ceilings.
 
 ## Remaining Gaps
 - [x] Exercise the live smoke harness against a real BigQuery project, not only in skipped mode.

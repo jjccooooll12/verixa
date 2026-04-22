@@ -181,6 +181,51 @@ sources:
     assert source.scan.lookback_seconds == 14 * 24 * 3600
 
 
+def test_load_config_parses_warehouse_max_bytes_billed(tmp_path: Path) -> None:
+    config_path = tmp_path / "verixa.yaml"
+    config_path.write_text(
+        """
+warehouse:
+  kind: bigquery
+  project: demo-project
+  max_bytes_billed: 500MB
+sources:
+  stripe.transactions:
+    table: raw.stripe_transactions
+    schema:
+      amount: float
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.warehouse.max_bytes_billed == 500 * 1024 * 1024
+
+
+def test_load_config_rejects_invalid_warehouse_max_bytes_billed(tmp_path: Path) -> None:
+    config_path = tmp_path / "verixa.yaml"
+    config_path.write_text(
+        """
+warehouse:
+  kind: bigquery
+  project: demo-project
+  max_bytes_billed: nope
+sources:
+  stripe.transactions:
+    table: raw.stripe_transactions
+    schema:
+      amount: float
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="Unsupported byte size"):
+        load_config(config_path)
+
+
 def test_load_config_parses_source_check_policy(tmp_path: Path) -> None:
     config_path = tmp_path / "verixa.yaml"
     config_path.write_text(

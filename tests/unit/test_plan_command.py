@@ -10,8 +10,9 @@ from verixa.storage.filesystem import SnapshotStore
 
 
 class _FakeConnector:
-    def __init__(self, warehouse) -> None:  # noqa: ANN001
+    def __init__(self, warehouse, *, max_bytes_billed=None) -> None:  # noqa: ANN001
         self.warehouse = warehouse
+        self.max_bytes_billed = max_bytes_billed
 
 
 class _FakeSnapshotService:
@@ -39,17 +40,13 @@ class _FakeSnapshotService:
         )
 
 
-def test_run_plan_reports_findings_from_baseline(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr("verixa.cli.plan.BigQueryConnector", _FakeConnector)
+def test_run_plan_reports_findings_from_baseline(tmp_path: Path) -> None:
     created_services: list[_FakeSnapshotService] = []
 
     def _service_factory(connector):  # noqa: ANN001
         service = _FakeSnapshotService(connector)
         created_services.append(service)
         return service
-
-    monkeypatch.setattr("verixa.cli.plan.SnapshotService", _service_factory)
 
     config_path = tmp_path / "verixa.yaml"
     config_path.write_text(
@@ -88,7 +85,12 @@ sources:
         )
     )
 
-    result = run_plan(config_path)
+    result = run_plan(
+        config_path,
+        connector_factory=_FakeConnector,
+        snapshot_service_factory=_service_factory,
+        snapshot_store_factory=lambda: store,
+    )
     output = render_diff_result(result, title="Plan")
 
     assert result.error_count >= 1

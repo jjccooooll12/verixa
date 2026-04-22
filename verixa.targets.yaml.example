@@ -1,0 +1,7 @@
+paths:
+  models/staging/stripe/**/*.sql:
+    - stripe.transactions
+  models/marts/finance/**/*.sql:
+    - stripe.transactions
+  macros/shared/:
+    - stripe.transactions

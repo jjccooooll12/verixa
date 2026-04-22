@@ -29,6 +29,12 @@ def run_explain(config_path: Path, source_name: str) -> dict[str, Any]:
     return {
         "source_name": source.name,
         "table": source.table,
+        "warehouse": {
+            "kind": config.warehouse.kind,
+            "project": config.warehouse.project,
+            "location": config.warehouse.location,
+            "max_bytes_billed": config.warehouse.max_bytes_billed,
+        },
         "schema": [{"name": name, "type": column_type} for name, column_type in sorted(source.schema.items())],
         "freshness": None
         if source.freshness is None

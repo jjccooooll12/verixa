@@ -24,8 +24,14 @@ from verixa.snapshot.models import (
 class BigQueryConnector(WarehouseConnector):
     """Collect snapshot data from BigQuery using the official client library."""
 
-    def __init__(self, warehouse: WarehouseConfig) -> None:
+    def __init__(
+        self,
+        warehouse: WarehouseConfig,
+        *,
+        max_bytes_billed: int | None = None,
+    ) -> None:
         self._warehouse = warehouse
+        self._max_bytes_billed = max_bytes_billed
 
     @cached_property
     def _client(self):
@@ -121,13 +127,24 @@ class BigQueryConnector(WarehouseConnector):
             bigquery.ArrayQueryParameter(parameter.name, "STRING", list(parameter.values))
             for parameter in parameters
         ]
-        job_config = bigquery.QueryJobConfig(query_parameters=query_parameters)
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=query_parameters,
+            maximum_bytes_billed=self._effective_max_bytes_billed,
+        )
 
         try:
             query_job = self._client.query(query, job_config=job_config)
             row = next(iter(query_job.result()))
         except Exception as exc:  # pragma: no cover - exercised through mocks in tests
-            raise ConnectorError(f"Failed to query BigQuery stats for '{table_ref}': {exc}") from exc
+            suffix = ""
+            if self._effective_max_bytes_billed is not None:
+                suffix = (
+                    " "
+                    f"(max_bytes_billed={_format_bytes(self._effective_max_bytes_billed)})"
+                )
+            raise ConnectorError(
+                f"Failed to query BigQuery stats for '{table_ref}'{suffix}: {exc}"
+            ) from exc
 
         row_count = row.get("exact_row_count", current_row_count)
         if row_count is not None:
@@ -170,7 +187,7 @@ class BigQueryConnector(WarehouseConnector):
             from google.cloud import bigquery
         except ImportError as exc:  # pragma: no cover - guarded in _client too
             raise ConnectorError(
-                "google-cloud-bigquery is not installed. Install DataGuard dependencies first."
+                "google-cloud-bigquery is not installed. Install Verixa dependencies first."
             ) from exc
 
         table_ref = parse_table_ref(source.table, default_project=self._warehouse.project)
@@ -226,6 +243,12 @@ class BigQueryConnector(WarehouseConnector):
             return False, str(exc)
         return True, table_ref.full_name
 
+    @property
+    def _effective_max_bytes_billed(self) -> int | None:
+        if self._max_bytes_billed is not None:
+            return self._max_bytes_billed
+        return self._warehouse.max_bytes_billed
+
 
 def _maybe_float(value: object) -> float | None:
     if value is None:
@@ -247,3 +270,15 @@ def _age_in_seconds(value: object, captured_at: datetime) -> int | None:
         return None
     delta = captured_at - normalized
     return max(int(delta.total_seconds()), 0)
+
+
+def _format_bytes(value: int) -> str:
+    units = ("B", "KB", "MB", "GB", "TB")
+    size = float(value)
+    for unit in units:
+        if size < 1024 or unit == units[-1]:
+            if unit == "B":
+                return f"{int(size)} {unit}"
+            return f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{int(value)} B"

@@ -27,6 +27,7 @@ _TYPE_ALIASES = {
 }
 
 _DURATION_RE = re.compile(r"^<?\s*(\d+)\s*([smhd])\s*$", re.IGNORECASE)
+_BYTE_SIZE_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([kmgt]?b)?\s*$", re.IGNORECASE)
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
@@ -58,6 +59,30 @@ def parse_duration_to_seconds(raw_value: str) -> int:
         "d": 60 * 60 * 24,
     }[unit]
     return amount * multiplier
+
+
+def parse_byte_size(raw_value: str) -> int:
+    """Parse byte sizes like ``500MB`` or ``1.5GB`` into integer bytes."""
+
+    match = _BYTE_SIZE_RE.match(raw_value)
+    if match is None:
+        raise NormalizationError(
+            f"Unsupported byte size '{raw_value}'. Use values like '500MB', '1GB', or '1048576B'."
+        )
+
+    amount = float(match.group(1))
+    if amount <= 0:
+        raise NormalizationError("Byte sizes must be greater than zero.")
+
+    unit = (match.group(2) or "B").upper()
+    multiplier = {
+        "B": 1,
+        "KB": 1024,
+        "MB": 1024**2,
+        "GB": 1024**3,
+        "TB": 1024**4,
+    }[unit]
+    return int(amount * multiplier)
 
 
 def normalize_schema_mapping(raw_schema: Any) -> dict[str, str]:

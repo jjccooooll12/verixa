@@ -2,16 +2,14 @@ from __future__ import annotations
 
 from typer.testing import CliRunner
 
-from verixa.cli.app import app
+from tests.cli.support import build_app
 from verixa.diff.models import DiffResult, Finding
 
 
-def test_check_command_fails_when_requested_and_errors_exist(monkeypatch) -> None:
+def test_check_command_fails_when_requested_and_errors_exist() -> None:
     runner = CliRunner()
-
-    monkeypatch.setattr(
-        "verixa.cli.app.run_check",
-        lambda config, risk_path=None, source_names=(): DiffResult(
+    app = build_app(
+        run_check=lambda config, risk_path=None, source_names=(), max_bytes_billed=None: DiffResult(
             findings=(
                 Finding(
                     source_name="stripe.transactions",
@@ -22,7 +20,7 @@ def test_check_command_fails_when_requested_and_errors_exist(monkeypatch) -> Non
             ),
             sources_checked=1,
             used_baseline=True,
-        ),
+        )
     )
 
     result = runner.invoke(app, ["check", "--fail-on-error"])
@@ -31,32 +29,28 @@ def test_check_command_fails_when_requested_and_errors_exist(monkeypatch) -> Non
     assert "findings" in result.stdout
 
 
-def test_check_command_passes_source_selection(monkeypatch) -> None:
+def test_check_command_passes_source_selection() -> None:
     runner = CliRunner()
     seen: dict[str, object] = {}
 
-    def _run_check(config, risk_path=None, source_names=()):  # noqa: ANN001
+    def _run_check(config, risk_path=None, source_names=(), max_bytes_billed=None):  # noqa: ANN001
         seen["source_names"] = source_names
+        seen["max_bytes_billed"] = max_bytes_billed
         return DiffResult(findings=(), sources_checked=1, used_baseline=True)
 
-    monkeypatch.setattr("verixa.cli.app.run_check", _run_check)
-
+    app = build_app(run_check=_run_check)
     result = runner.invoke(app, ["check", "--source", "stripe.transactions"])
 
     assert result.exit_code == 0
     assert seen["source_names"] == ("stripe.transactions",)
+    assert seen["max_bytes_billed"] is None
 
 
-def test_check_command_can_include_estimated_bytes(monkeypatch) -> None:
+def test_check_command_can_include_estimated_bytes() -> None:
     runner = CliRunner()
-
-    monkeypatch.setattr(
-        "verixa.cli.app._estimate_bytes",
-        lambda config, source_names, command: {"stripe.transactions": 2048},
-    )
-    monkeypatch.setattr(
-        "verixa.cli.app.run_check",
-        lambda config, risk_path=None, source_names=(): DiffResult(
+    app = build_app(
+        estimate_bytes=lambda config, source_names, command: {"stripe.transactions": 2048},
+        run_check=lambda config, risk_path=None, source_names=(), max_bytes_billed=None: DiffResult(
             findings=(),
             sources_checked=1,
             used_baseline=True,
@@ -67,3 +61,18 @@ def test_check_command_can_include_estimated_bytes(monkeypatch) -> None:
 
     assert result.exit_code == 0
     assert "Estimated scan: 2.0 KB total" in result.stdout
+
+
+def test_check_command_passes_max_bytes_billed_override() -> None:
+    runner = CliRunner()
+    seen: dict[str, object] = {}
+
+    def _run_check(config, risk_path=None, source_names=(), max_bytes_billed=None):  # noqa: ANN001
+        seen["max_bytes_billed"] = max_bytes_billed
+        return DiffResult(findings=(), sources_checked=1, used_baseline=True)
+
+    app = build_app(run_check=_run_check)
+    result = runner.invoke(app, ["check", "--max-bytes-billed", "500MB"])
+
+    assert result.exit_code == 0
+    assert seen["max_bytes_billed"] == 500 * 1024 * 1024

@@ -13,7 +13,13 @@ def run_diff(
     risk_path: Path | None = None,
     *,
     source_names: tuple[str, ...] = (),
+    max_bytes_billed: int | None = None,
 ) -> DiffResult:
     """Compare current data state with the stored baseline and declared contracts."""
 
-    return run_plan(config_path=config_path, risk_path=risk_path, source_names=source_names)
+    return run_plan(
+        config_path=config_path,
+        risk_path=risk_path,
+        source_names=source_names,
+        max_bytes_billed=max_bytes_billed,
+    )

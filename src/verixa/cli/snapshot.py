@@ -2,27 +2,41 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from verixa.config.loader import load_config
+from verixa.connectors.base import WarehouseConnector
 from verixa.connectors.bigquery.connector import BigQueryConnector
+from verixa.contracts.models import ProjectConfig, WarehouseConfig
 from verixa.snapshot.models import ProjectSnapshot
 from verixa.snapshot.service import SnapshotService
 from verixa.storage.filesystem import SnapshotStore
+
+ConfigLoader = Callable[..., ProjectConfig]
+ConnectorFactory = Callable[..., WarehouseConnector]
+SnapshotServiceFactory = Callable[[WarehouseConnector], SnapshotService]
+SnapshotStoreFactory = Callable[[], SnapshotStore]
 
 
 def run_snapshot(
     config_path: Path,
     *,
     source_names: tuple[str, ...] = (),
+    max_bytes_billed: int | None = None,
+    config_loader: ConfigLoader = load_config,
+    connector_factory: ConnectorFactory = BigQueryConnector,
+    snapshot_service_factory: SnapshotServiceFactory = SnapshotService,
+    snapshot_store_factory: SnapshotStoreFactory = SnapshotStore,
 ) -> tuple[ProjectSnapshot, Path]:
     """Capture the current baseline snapshot and persist it locally."""
 
-    config = load_config(config_path, source_names=source_names)
-    connector = BigQueryConnector(config.warehouse)
-    service = SnapshotService(connector)
+    config = config_loader(config_path, source_names=source_names)
+    connector = connector_factory(config.warehouse, max_bytes_billed=max_bytes_billed)
+    service = snapshot_service_factory(connector)
     snapshot = service.capture(config, mode="snapshot")
-    store = SnapshotStore()
+    store = snapshot_store_factory()
     if source_names:
         baseline_path = store.merge_baseline(snapshot)
     else:

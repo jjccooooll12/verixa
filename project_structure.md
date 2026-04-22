@@ -16,11 +16,13 @@ This document describes the implemented MVP repository structure and the respons
 |-- pyproject.toml
 |-- verixa.yaml
 |-- verixa.risk.yaml.example
+|-- verixa.targets.yaml.example
 |-- workflow.md
 |-- src/
 |   `-- verixa/
 |       |-- __init__.py
 |       |-- __main__.py
+|       |-- targeting.py
 |       |-- cli/
 |       |   |-- __init__.py
 |       |   `-- app.py
@@ -74,6 +76,7 @@ This document describes the implemented MVP repository structure and the respons
 `-- tests/
     |-- __init__.py
     |-- cli/
+    |   |-- support.py
     |   |-- test_check_command.py
     |   |-- test_check_runtime.py
     |   |-- test_check_warning_behavior.py
@@ -99,6 +102,7 @@ This document describes the implemented MVP repository structure and the respons
         |-- test_snapshot_command.py
         |-- test_snapshot_service.py
         |-- test_snapshot_storage.py
+        |-- test_targeting.py
         `-- test_support.py
 ```
 
@@ -144,9 +148,11 @@ Responsibilities:
 - validate required fields
 - normalize configuration into typed models
 - parse project-level rule thresholds
+- parse optional `max_bytes_billed` warehouse ceilings
 - merge source-level rule overrides on top of project defaults
 - return clear errors for invalid config
 - prefer Verixa default paths for new projects
+- load optional changed-file targeting mappings from `verixa.targets.yaml`
 
 ### `contracts/`
 Canonical contract definitions.
@@ -173,6 +179,7 @@ Responsibilities:
 - retrieve metadata
 - build low-cost aggregate queries
 - support dry-run byte estimation
+- enforce optional max-bytes-billed ceilings on live queries
 - support auth and source-reachability checks for `status` and `doctor`
 - convert BigQuery responses into internal snapshot types
 
@@ -212,6 +219,15 @@ Responsibilities:
 - aggregate findings per source
 - attach optional downstream risk hints
 - enforce stale-baseline warnings and CI warning policies
+
+### `targeting.py`
+Changed-file source targeting.
+
+Responsibilities:
+- load optional path-to-source mappings from `verixa.targets.yaml`
+- resolve changed repo paths into logical sources
+- discover changed files from `git diff <base>...HEAD` for CI workflows
+- fall back safely to all sources when no mapping matches
 
 ### `output/`
 Human-friendly and machine-readable rendering.

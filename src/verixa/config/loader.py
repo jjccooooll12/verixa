@@ -25,6 +25,7 @@ from verixa.contracts.models import (
 )
 from verixa.contracts.normalize import (
     NormalizationError,
+    parse_byte_size,
     normalize_schema_mapping,
     parse_duration_to_seconds,
     validate_identifier,
@@ -97,12 +98,32 @@ def _parse_warehouse(raw_warehouse: Any) -> WarehouseConfig:
 
     project = raw_warehouse.get("project")
     location = raw_warehouse.get("location")
+    max_bytes_billed = raw_warehouse.get("max_bytes_billed")
     if project is not None and not isinstance(project, str):
         raise NormalizationError("warehouse.project must be a string when provided.")
     if location is not None and not isinstance(location, str):
         raise NormalizationError("warehouse.location must be a string when provided.")
+    parsed_max_bytes_billed: int | None = None
+    if max_bytes_billed is not None:
+        if isinstance(max_bytes_billed, int):
+            if max_bytes_billed <= 0:
+                raise NormalizationError(
+                    "warehouse.max_bytes_billed must be greater than zero when provided."
+                )
+            parsed_max_bytes_billed = max_bytes_billed
+        elif isinstance(max_bytes_billed, str) and max_bytes_billed:
+            parsed_max_bytes_billed = parse_byte_size(max_bytes_billed)
+        else:
+            raise NormalizationError(
+                "warehouse.max_bytes_billed must be a positive integer, a byte-size string, or null."
+            )
 
-    return WarehouseConfig(kind=kind, project=project, location=location)
+    return WarehouseConfig(
+        kind=kind,
+        project=project,
+        location=location,
+        max_bytes_billed=parsed_max_bytes_billed,
+    )
 
 
 def _parse_sources(

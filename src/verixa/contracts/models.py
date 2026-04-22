@@ -13,6 +13,7 @@ class WarehouseConfig:
     kind: str
     project: str | None = None
     location: str | None = None
+    max_bytes_billed: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

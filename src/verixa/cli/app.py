@@ -3,23 +3,25 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import typer
 
-from verixa.cli.check import run_check
-from verixa.cli.cost import CostReport, run_cost
-from verixa.cli.diff import run_diff
-from verixa.cli.doctor import run_doctor
-from verixa.cli.explain import run_explain
-from verixa.cli.init import init_project
-from verixa.cli.snapshot import run_snapshot
-from verixa.cli.status import StatusReport, run_status
-from verixa.cli.validate import run_validate
+from verixa.cli.check import run_check as _run_check_impl
+from verixa.cli.cost import CostReport, run_cost as _run_cost_impl
+from verixa.cli.diff import run_diff as _run_diff_impl
+from verixa.cli.doctor import run_doctor as _run_doctor_impl
+from verixa.cli.explain import run_explain as _run_explain_impl
+from verixa.cli.init import init_project as _init_project_impl
+from verixa.cli.snapshot import run_snapshot as _run_snapshot_impl
+from verixa.cli.status import StatusReport, run_status as _run_status_impl
+from verixa.cli.validate import run_validate as _run_validate_impl
 from verixa.config.errors import ConfigError
 from verixa.connectors.base import ConnectorError
+from verixa.contracts.normalize import parse_byte_size
 from verixa.diff.models import DiffResult
 from verixa.output.console import render_diff_result, render_snapshot_summary
 from verixa.output.exit_codes import FINDINGS_ERROR, RUNTIME_ERROR, SUCCESS
@@ -28,9 +30,9 @@ from verixa.output.json import (
     render_error_json,
     render_snapshot_summary_json,
 )
+from verixa.snapshot.models import ProjectSnapshot
 from verixa.storage.filesystem import StorageError
-
-app = typer.Typer(add_completion=False, help="Verixa: developer-first Data CI for source contracts.")
+from verixa.targeting import resolve_source_names as _resolve_source_names_impl
 
 
 class OutputFormat(str, Enum):
@@ -40,343 +42,626 @@ class OutputFormat(str, Enum):
     JSON = "json"
 
 
-@app.command("init")
-def init_command(
-    force: bool = typer.Option(False, help="Overwrite starter files if they already exist."),
-) -> None:
-    """Initialize a Verixa project."""
+@dataclass(frozen=True, slots=True)
+class AppDeps:
+    """Explicit command dependencies used to build a CLI instance."""
 
-    try:
-        created = init_project(force=force)
-    except FileExistsError as exc:
-        _exit_with_error(str(exc))
-    typer.echo("Created:")
-    for path in created:
-        typer.echo(f"- {path}")
-
-
-@app.command("snapshot")
-def snapshot_command(
-    config: Path = typer.Option(Path("verixa.yaml"), help="Path to verixa.yaml."),
-    source: list[str] | None = typer.Option(
-        None,
-        "--source",
-        help="Limit the command to one or more source names. Repeat to select multiple.",
-    ),
-    output: OutputFormat = typer.Option(
-        OutputFormat.TEXT,
-        "--format",
-        help="Output format.",
-    ),
-    estimate_bytes: bool = typer.Option(
-        False,
-        "--estimate-bytes",
-        help="Estimate BigQuery bytes processed for the snapshot query shape and include it in output.",
-    ),
-) -> None:
-    """Capture the current source baseline and store it locally."""
-
-    try:
-        selected_sources = tuple(source or ())
-        estimates = _estimate_bytes(config, selected_sources, command="snapshot") if estimate_bytes else None
-        snapshot, baseline_path = run_snapshot(config, source_names=selected_sources)
-        typer.echo(_render_snapshot_output(snapshot, baseline_path, output, estimates))
-    except (ConfigError, ConnectorError, StorageError, ValueError) as exc:
-        _exit_with_error(str(exc), output)
+    init_project: Callable[..., list[Path]]
+    run_snapshot: Callable[..., tuple[ProjectSnapshot, Path]]
+    run_diff: Callable[..., DiffResult]
+    run_validate: Callable[..., DiffResult]
+    run_check: Callable[..., DiffResult]
+    run_status: Callable[..., StatusReport]
+    run_doctor: Callable[..., DiffResult]
+    run_explain: Callable[..., dict[str, Any]]
+    run_cost: Callable[..., CostReport]
+    estimate_bytes: Callable[..., dict[str, int]]
+    resolve_source_names: Callable[..., tuple[str, ...]]
 
 
-@app.command("diff")
-def diff_command(
-    config: Path = typer.Option(Path("verixa.yaml"), help="Path to verixa.yaml."),
-    risk_config: Path | None = typer.Option(
-        Path("verixa.risk.yaml"),
-        help="Optional path to downstream risk mapping YAML.",
-    ),
-    source: list[str] | None = typer.Option(
-        None,
-        "--source",
-        help="Limit the command to one or more source names. Repeat to select multiple.",
-    ),
-    output: OutputFormat = typer.Option(
-        OutputFormat.TEXT,
-        "--format",
-        help="Output format.",
-    ),
-    estimate_bytes: bool = typer.Option(
-        False,
-        "--estimate-bytes",
-        help="Estimate BigQuery bytes processed for the diff query shape and include it in output.",
-    ),
-) -> None:
-    """Show contract and baseline drift for current data."""
-
-    _run_diff_like_command(
-        command_name="diff",
-        config=config,
-        risk_config=risk_config,
-        source=source,
-        output=output,
-        estimate_bytes=estimate_bytes,
-    )
+def _estimate_bytes_impl(
+    config_path: Path,
+    source_names: tuple[str, ...],
+    *,
+    command: str,
+) -> dict[str, int]:
+    return _run_cost_impl(config_path, command=command, source_names=source_names).estimates
 
 
-@app.command("plan", hidden=True)
-def plan_alias_command(
-    config: Path = typer.Option(Path("verixa.yaml"), help="Path to verixa.yaml."),
-    risk_config: Path | None = typer.Option(Path("verixa.risk.yaml")),
-    source: list[str] | None = typer.Option(None, "--source"),
-    output: OutputFormat = typer.Option(OutputFormat.TEXT, "--format"),
-    estimate_bytes: bool = typer.Option(False, "--estimate-bytes"),
-) -> None:
-    """Legacy alias for ``verixa diff``."""
-
-    _run_diff_like_command(
-        command_name="diff",
-        config=config,
-        risk_config=risk_config,
-        source=source,
-        output=output,
-        estimate_bytes=estimate_bytes,
-    )
+DEFAULT_APP_DEPS = AppDeps(
+    init_project=_init_project_impl,
+    run_snapshot=_run_snapshot_impl,
+    run_diff=_run_diff_impl,
+    run_validate=_run_validate_impl,
+    run_check=_run_check_impl,
+    run_status=_run_status_impl,
+    run_doctor=_run_doctor_impl,
+    run_explain=_run_explain_impl,
+    run_cost=_run_cost_impl,
+    estimate_bytes=_estimate_bytes_impl,
+    resolve_source_names=_resolve_source_names_impl,
+)
 
 
-@app.command("validate")
-def validate_command(
-    config: Path = typer.Option(Path("verixa.yaml"), help="Path to verixa.yaml."),
-    risk_config: Path | None = typer.Option(
-        Path("verixa.risk.yaml"),
-        help="Optional path to downstream risk mapping YAML.",
-    ),
-    source: list[str] | None = typer.Option(
-        None,
-        "--source",
-        help="Limit the command to one or more source names. Repeat to select multiple.",
-    ),
-    output: OutputFormat = typer.Option(
-        OutputFormat.TEXT,
-        "--format",
-        help="Output format.",
-    ),
-    estimate_bytes: bool = typer.Option(
-        False,
-        "--estimate-bytes",
-        help="Estimate BigQuery bytes processed for the validate query shape and include it in output.",
-    ),
-) -> None:
-    """Run contract validation against current live data."""
+def create_app(deps: AppDeps | None = None) -> typer.Typer:
+    """Build a Typer app with explicit command dependencies."""
 
-    _run_validate_like_command(
-        command_name="validate",
-        config=config,
-        risk_config=risk_config,
-        source=source,
-        output=output,
-        estimate_bytes=estimate_bytes,
-    )
+    active_deps = deps or DEFAULT_APP_DEPS
+    app = typer.Typer(add_completion=False, help="Verixa: developer-first Data CI for source contracts.")
 
+    @app.command("init")
+    def init_command(
+        force: bool = typer.Option(False, help="Overwrite starter files if they already exist."),
+    ) -> None:
+        """Initialize a Verixa project."""
 
-@app.command("test", hidden=True)
-def test_alias_command(
-    config: Path = typer.Option(Path("verixa.yaml"), help="Path to verixa.yaml."),
-    risk_config: Path | None = typer.Option(Path("verixa.risk.yaml")),
-    source: list[str] | None = typer.Option(None, "--source"),
-    output: OutputFormat = typer.Option(OutputFormat.TEXT, "--format"),
-    estimate_bytes: bool = typer.Option(False, "--estimate-bytes"),
-) -> None:
-    """Legacy alias for ``verixa validate``."""
+        try:
+            created = active_deps.init_project(force=force)
+        except FileExistsError as exc:
+            _exit_with_error(str(exc))
+        typer.echo("Created:")
+        for path in created:
+            typer.echo(f"- {path}")
 
-    _run_validate_like_command(
-        command_name="validate",
-        config=config,
-        risk_config=risk_config,
-        source=source,
-        output=output,
-        estimate_bytes=estimate_bytes,
-    )
+    @app.command("snapshot")
+    def snapshot_command(
+        config: Path = typer.Option(Path("verixa.yaml"), help="Path to verixa.yaml."),
+        source: list[str] | None = typer.Option(
+            None,
+            "--source",
+            help="Limit the command to one or more source names. Repeat to select multiple.",
+        ),
+        output: OutputFormat = typer.Option(
+            OutputFormat.TEXT,
+            "--format",
+            help="Output format.",
+        ),
+        changed_file: list[str] | None = typer.Option(
+            None,
+            "--changed-file",
+            help="Changed repo path used to auto-select sources. Repeat to select multiple.",
+        ),
+        changed_against: str | None = typer.Option(
+            None,
+            "--changed-against",
+            help="Use git diff against this ref to auto-select sources from verixa.targets.yaml.",
+        ),
+        targets_config: Path | None = typer.Option(
+            Path("verixa.targets.yaml"),
+            "--targets-config",
+            help="Optional path to changed-file targeting YAML.",
+        ),
+        estimate_bytes: bool = typer.Option(
+            False,
+            "--estimate-bytes",
+            help="Estimate BigQuery bytes processed for the snapshot query shape and include it in output.",
+        ),
+        max_bytes_billed: str | None = typer.Option(
+            None,
+            "--max-bytes-billed",
+            help="Cap live BigQuery query bytes for this run. Accepts values like 500MB or 1GB.",
+        ),
+    ) -> None:
+        """Capture the current source baseline and store it locally."""
 
+        try:
+            selected_sources = _resolve_cli_source_names(
+                deps=active_deps,
+                config_path=config,
+                explicit_sources=tuple(source or ()),
+                changed_files=tuple(changed_file or ()),
+                changed_against=changed_against,
+                targets_path=targets_config,
+                output=output,
+            )
+            parsed_max_bytes_billed = _parse_max_bytes_billed(max_bytes_billed)
+            estimates = (
+                active_deps.estimate_bytes(config, selected_sources, command="snapshot")
+                if estimate_bytes
+                else None
+            )
+            snapshot, baseline_path = active_deps.run_snapshot(
+                config,
+                source_names=selected_sources,
+                max_bytes_billed=parsed_max_bytes_billed,
+            )
+            typer.echo(_render_snapshot_output(snapshot, baseline_path, output, estimates))
+        except (ConfigError, ConnectorError, StorageError, ValueError) as exc:
+            _exit_with_error(str(exc), output)
 
-@app.command("check")
-def check_command(
-    config: Path = typer.Option(Path("verixa.yaml"), help="Path to verixa.yaml."),
-    risk_config: Path | None = typer.Option(
-        Path("verixa.risk.yaml"),
-        help="Optional path to downstream risk mapping YAML.",
-    ),
-    source: list[str] | None = typer.Option(
-        None,
-        "--source",
-        help="Limit the command to one or more source names. Repeat to select multiple.",
-    ),
-    fail_on_error: bool = typer.Option(
-        False,
-        "--fail-on-error",
-        help="Exit with status 1 when error-severity findings exist.",
-    ),
-    fail_on_warning: bool = typer.Option(
-        False,
-        "--fail-on-warning",
-        help="Exit with status 1 when any warning-severity findings exist.",
-    ),
-    output: OutputFormat = typer.Option(
-        OutputFormat.TEXT,
-        "--format",
-        help="Output format.",
-    ),
-    estimate_bytes: bool = typer.Option(
-        False,
-        "--estimate-bytes",
-        help="Estimate BigQuery bytes processed for the check query shape and include it in output.",
-    ),
-) -> None:
-    """Run the CI-friendly validation path."""
+    @app.command("diff")
+    def diff_command(
+        config: Path = typer.Option(Path("verixa.yaml"), help="Path to verixa.yaml."),
+        risk_config: Path | None = typer.Option(
+            Path("verixa.risk.yaml"),
+            help="Optional path to downstream risk mapping YAML.",
+        ),
+        source: list[str] | None = typer.Option(
+            None,
+            "--source",
+            help="Limit the command to one or more source names. Repeat to select multiple.",
+        ),
+        output: OutputFormat = typer.Option(
+            OutputFormat.TEXT,
+            "--format",
+            help="Output format.",
+        ),
+        changed_file: list[str] | None = typer.Option(
+            None,
+            "--changed-file",
+            help="Changed repo path used to auto-select sources. Repeat to select multiple.",
+        ),
+        changed_against: str | None = typer.Option(
+            None,
+            "--changed-against",
+            help="Use git diff against this ref to auto-select sources from verixa.targets.yaml.",
+        ),
+        targets_config: Path | None = typer.Option(
+            Path("verixa.targets.yaml"),
+            "--targets-config",
+            help="Optional path to changed-file targeting YAML.",
+        ),
+        estimate_bytes: bool = typer.Option(
+            False,
+            "--estimate-bytes",
+            help="Estimate BigQuery bytes processed for the diff query shape and include it in output.",
+        ),
+        max_bytes_billed: str | None = typer.Option(
+            None,
+            "--max-bytes-billed",
+            help="Cap live BigQuery query bytes for this run. Accepts values like 500MB or 1GB.",
+        ),
+    ) -> None:
+        """Show contract and baseline drift for current data."""
 
-    try:
-        selected_sources = tuple(source or ())
-        estimates = _estimate_bytes(config, selected_sources, command="check") if estimate_bytes else None
-        result = run_check(
-            config,
-            risk_path=risk_config,
-            source_names=selected_sources,
+        _run_diff_like_command(
+            deps=active_deps,
+            command_name="diff",
+            config=config,
+            risk_config=risk_config,
+            source=source,
+            changed_file=changed_file,
+            changed_against=changed_against,
+            targets_config=targets_config,
+            output=output,
+            estimate_bytes=estimate_bytes,
+            max_bytes_billed=max_bytes_billed,
         )
-        typer.echo(_render_diff_output(result, "Check", output, estimates))
-    except (ConfigError, ConnectorError, StorageError, ValueError) as exc:
-        _exit_with_error(str(exc), output)
 
-    should_fail = False
-    if fail_on_error and result.error_count > 0:
-        should_fail = True
-    if fail_on_warning and result.warning_count > 0:
-        should_fail = True
-    if result.warning_policy_failure_count > 0:
-        should_fail = True
-    if should_fail:
-        raise typer.Exit(code=FINDINGS_ERROR)
-    raise typer.Exit(code=SUCCESS)
+    @app.command("plan", hidden=True)
+    def plan_alias_command(
+        config: Path = typer.Option(Path("verixa.yaml"), help="Path to verixa.yaml."),
+        risk_config: Path | None = typer.Option(Path("verixa.risk.yaml")),
+        source: list[str] | None = typer.Option(None, "--source"),
+        output: OutputFormat = typer.Option(OutputFormat.TEXT, "--format"),
+        changed_file: list[str] | None = typer.Option(None, "--changed-file"),
+        changed_against: str | None = typer.Option(None, "--changed-against"),
+        targets_config: Path | None = typer.Option(Path("verixa.targets.yaml"), "--targets-config"),
+        estimate_bytes: bool = typer.Option(False, "--estimate-bytes"),
+        max_bytes_billed: str | None = typer.Option(None, "--max-bytes-billed"),
+    ) -> None:
+        """Legacy alias for ``verixa diff``."""
 
+        _run_diff_like_command(
+            deps=active_deps,
+            command_name="diff",
+            config=config,
+            risk_config=risk_config,
+            source=source,
+            changed_file=changed_file,
+            changed_against=changed_against,
+            targets_config=targets_config,
+            output=output,
+            estimate_bytes=estimate_bytes,
+            max_bytes_billed=max_bytes_billed,
+        )
 
-@app.command("status")
-def status_command(
-    config: Path = typer.Option(Path("verixa.yaml"), help="Path to verixa.yaml."),
-    source: list[str] | None = typer.Option(
-        None,
-        "--source",
-        help="Optionally limit status to one or more source names.",
-    ),
-    output: OutputFormat = typer.Option(OutputFormat.TEXT, "--format", help="Output format."),
-) -> None:
-    """Show config, baseline, auth, and source status."""
+    @app.command("validate")
+    def validate_command(
+        config: Path = typer.Option(Path("verixa.yaml"), help="Path to verixa.yaml."),
+        risk_config: Path | None = typer.Option(
+            Path("verixa.risk.yaml"),
+            help="Optional path to downstream risk mapping YAML.",
+        ),
+        source: list[str] | None = typer.Option(
+            None,
+            "--source",
+            help="Limit the command to one or more source names. Repeat to select multiple.",
+        ),
+        output: OutputFormat = typer.Option(
+            OutputFormat.TEXT,
+            "--format",
+            help="Output format.",
+        ),
+        changed_file: list[str] | None = typer.Option(
+            None,
+            "--changed-file",
+            help="Changed repo path used to auto-select sources. Repeat to select multiple.",
+        ),
+        changed_against: str | None = typer.Option(
+            None,
+            "--changed-against",
+            help="Use git diff against this ref to auto-select sources from verixa.targets.yaml.",
+        ),
+        targets_config: Path | None = typer.Option(
+            Path("verixa.targets.yaml"),
+            "--targets-config",
+            help="Optional path to changed-file targeting YAML.",
+        ),
+        estimate_bytes: bool = typer.Option(
+            False,
+            "--estimate-bytes",
+            help="Estimate BigQuery bytes processed for the validate query shape and include it in output.",
+        ),
+        max_bytes_billed: str | None = typer.Option(
+            None,
+            "--max-bytes-billed",
+            help="Cap live BigQuery query bytes for this run. Accepts values like 500MB or 1GB.",
+        ),
+    ) -> None:
+        """Run contract validation against current live data."""
 
-    try:
-        report = run_status(config, source_names=tuple(source or ()))
-        typer.echo(_render_status_output(report, output))
-    except (ConfigError, ConnectorError, StorageError) as exc:
-        _exit_with_error(str(exc), output)
+        _run_validate_like_command(
+            deps=active_deps,
+            command_name="validate",
+            config=config,
+            risk_config=risk_config,
+            source=source,
+            changed_file=changed_file,
+            changed_against=changed_against,
+            targets_config=targets_config,
+            output=output,
+            estimate_bytes=estimate_bytes,
+            max_bytes_billed=max_bytes_billed,
+        )
 
+    @app.command("test", hidden=True)
+    def test_alias_command(
+        config: Path = typer.Option(Path("verixa.yaml"), help="Path to verixa.yaml."),
+        risk_config: Path | None = typer.Option(Path("verixa.risk.yaml")),
+        source: list[str] | None = typer.Option(None, "--source"),
+        output: OutputFormat = typer.Option(OutputFormat.TEXT, "--format"),
+        changed_file: list[str] | None = typer.Option(None, "--changed-file"),
+        changed_against: str | None = typer.Option(None, "--changed-against"),
+        targets_config: Path | None = typer.Option(Path("verixa.targets.yaml"), "--targets-config"),
+        estimate_bytes: bool = typer.Option(False, "--estimate-bytes"),
+        max_bytes_billed: str | None = typer.Option(None, "--max-bytes-billed"),
+    ) -> None:
+        """Legacy alias for ``verixa validate``."""
 
-@app.command("doctor")
-def doctor_command(
-    config: Path = typer.Option(Path("verixa.yaml"), help="Path to verixa.yaml."),
-    source: list[str] | None = typer.Option(
-        None,
-        "--source",
-        help="Optionally limit diagnostics to one or more source names.",
-    ),
-    output: OutputFormat = typer.Option(OutputFormat.TEXT, "--format", help="Output format."),
-) -> None:
-    """Run diagnostics for config, auth, baseline, and source access."""
+        _run_validate_like_command(
+            deps=active_deps,
+            command_name="validate",
+            config=config,
+            risk_config=risk_config,
+            source=source,
+            changed_file=changed_file,
+            changed_against=changed_against,
+            targets_config=targets_config,
+            output=output,
+            estimate_bytes=estimate_bytes,
+            max_bytes_billed=max_bytes_billed,
+        )
 
-    try:
-        result = run_doctor(config, source_names=tuple(source or ()))
-        typer.echo(_render_diff_output(result, "Doctor", output))
-    except (ConfigError, ConnectorError, StorageError) as exc:
-        _exit_with_error(str(exc), output)
+    @app.command("check")
+    def check_command(
+        config: Path = typer.Option(Path("verixa.yaml"), help="Path to verixa.yaml."),
+        risk_config: Path | None = typer.Option(
+            Path("verixa.risk.yaml"),
+            help="Optional path to downstream risk mapping YAML.",
+        ),
+        source: list[str] | None = typer.Option(
+            None,
+            "--source",
+            help="Limit the command to one or more source names. Repeat to select multiple.",
+        ),
+        fail_on_error: bool = typer.Option(
+            False,
+            "--fail-on-error",
+            help="Exit with status 1 when error-severity findings exist.",
+        ),
+        fail_on_warning: bool = typer.Option(
+            False,
+            "--fail-on-warning",
+            help="Exit with status 1 when any warning-severity findings exist.",
+        ),
+        output: OutputFormat = typer.Option(
+            OutputFormat.TEXT,
+            "--format",
+            help="Output format.",
+        ),
+        changed_file: list[str] | None = typer.Option(
+            None,
+            "--changed-file",
+            help="Changed repo path used to auto-select sources. Repeat to select multiple.",
+        ),
+        changed_against: str | None = typer.Option(
+            None,
+            "--changed-against",
+            help="Use git diff against this ref to auto-select sources from verixa.targets.yaml.",
+        ),
+        targets_config: Path | None = typer.Option(
+            Path("verixa.targets.yaml"),
+            "--targets-config",
+            help="Optional path to changed-file targeting YAML.",
+        ),
+        estimate_bytes: bool = typer.Option(
+            False,
+            "--estimate-bytes",
+            help="Estimate BigQuery bytes processed for the check query shape and include it in output.",
+        ),
+        max_bytes_billed: str | None = typer.Option(
+            None,
+            "--max-bytes-billed",
+            help="Cap live BigQuery query bytes for this run. Accepts values like 500MB or 1GB.",
+        ),
+    ) -> None:
+        """Run the CI-friendly validation path."""
 
-    if result.error_count > 0:
-        raise typer.Exit(code=FINDINGS_ERROR)
-    raise typer.Exit(code=SUCCESS)
+        try:
+            selected_sources = _resolve_cli_source_names(
+                deps=active_deps,
+                config_path=config,
+                explicit_sources=tuple(source or ()),
+                changed_files=tuple(changed_file or ()),
+                changed_against=changed_against,
+                targets_path=targets_config,
+                output=output,
+            )
+            parsed_max_bytes_billed = _parse_max_bytes_billed(max_bytes_billed)
+            estimates = (
+                active_deps.estimate_bytes(config, selected_sources, command="check")
+                if estimate_bytes
+                else None
+            )
+            result = active_deps.run_check(
+                config,
+                risk_path=risk_config,
+                source_names=selected_sources,
+                max_bytes_billed=parsed_max_bytes_billed,
+            )
+            typer.echo(_render_diff_output(result, "Check", output, estimates))
+        except (ConfigError, ConnectorError, StorageError, ValueError) as exc:
+            _exit_with_error(str(exc), output)
 
+        should_fail = False
+        if fail_on_error and result.error_count > 0:
+            should_fail = True
+        if fail_on_warning and result.warning_count > 0:
+            should_fail = True
+        if result.warning_policy_failure_count > 0:
+            should_fail = True
+        if should_fail:
+            raise typer.Exit(code=FINDINGS_ERROR)
+        raise typer.Exit(code=SUCCESS)
 
-@app.command("explain")
-def explain_command(
-    source_name: str = typer.Argument(..., help="Logical source name to explain."),
-    config: Path = typer.Option(Path("verixa.yaml"), help="Path to verixa.yaml."),
-    output: OutputFormat = typer.Option(OutputFormat.TEXT, "--format", help="Output format."),
-) -> None:
-    """Show one source contract in a human-readable form."""
+    @app.command("status")
+    def status_command(
+        config: Path = typer.Option(Path("verixa.yaml"), help="Path to verixa.yaml."),
+        source: list[str] | None = typer.Option(
+            None,
+            "--source",
+            help="Optionally limit status to one or more source names.",
+        ),
+        output: OutputFormat = typer.Option(OutputFormat.TEXT, "--format", help="Output format."),
+    ) -> None:
+        """Show config, baseline, auth, and source status."""
 
-    try:
-        payload = run_explain(config, source_name)
-        typer.echo(_render_explain_output(payload, output))
-    except (ConfigError, ConnectorError, StorageError, ValueError) as exc:
-        _exit_with_error(str(exc), output)
+        try:
+            report = active_deps.run_status(config, source_names=tuple(source or ()))
+            typer.echo(_render_status_output(report, output))
+        except (ConfigError, ConnectorError, StorageError) as exc:
+            _exit_with_error(str(exc), output)
 
+    @app.command("doctor")
+    def doctor_command(
+        config: Path = typer.Option(Path("verixa.yaml"), help="Path to verixa.yaml."),
+        source: list[str] | None = typer.Option(
+            None,
+            "--source",
+            help="Optionally limit diagnostics to one or more source names.",
+        ),
+        output: OutputFormat = typer.Option(OutputFormat.TEXT, "--format", help="Output format."),
+    ) -> None:
+        """Run diagnostics for config, auth, baseline, and source access."""
 
-@app.command("cost")
-def cost_command(
-    command: str = typer.Argument(
-        "diff",
-        help="Workflow step to estimate: snapshot, diff, validate, or check. Legacy aliases plan and test are also accepted.",
-    ),
-    config: Path = typer.Option(Path("verixa.yaml"), help="Path to verixa.yaml."),
-    source: list[str] | None = typer.Option(
-        None,
-        "--source",
-        help="Optionally limit estimates to one or more source names.",
-    ),
-    output: OutputFormat = typer.Option(OutputFormat.TEXT, "--format", help="Output format."),
-) -> None:
-    """Estimate BigQuery bytes processed for one Verixa workflow step."""
+        try:
+            result = active_deps.run_doctor(config, source_names=tuple(source or ()))
+            typer.echo(_render_diff_output(result, "Doctor", output))
+        except (ConfigError, ConnectorError, StorageError) as exc:
+            _exit_with_error(str(exc), output)
 
-    try:
-        report = run_cost(config, command=command, source_names=tuple(source or ()))
-        typer.echo(_render_cost_output(report, output))
-    except (ConfigError, ConnectorError, StorageError, ValueError) as exc:
-        _exit_with_error(str(exc), output)
+        if result.error_count > 0:
+            raise typer.Exit(code=FINDINGS_ERROR)
+        raise typer.Exit(code=SUCCESS)
+
+    @app.command("explain")
+    def explain_command(
+        source_name: str = typer.Argument(..., help="Logical source name to explain."),
+        config: Path = typer.Option(Path("verixa.yaml"), help="Path to verixa.yaml."),
+        output: OutputFormat = typer.Option(OutputFormat.TEXT, "--format", help="Output format."),
+    ) -> None:
+        """Show one source contract in a human-readable form."""
+
+        try:
+            payload = active_deps.run_explain(config, source_name)
+            typer.echo(_render_explain_output(payload, output))
+        except (ConfigError, ConnectorError, StorageError, ValueError) as exc:
+            _exit_with_error(str(exc), output)
+
+    @app.command("cost")
+    def cost_command(
+        command: str = typer.Argument(
+            "diff",
+            help="Workflow step to estimate: snapshot, diff, validate, or check. Legacy aliases plan and test are also accepted.",
+        ),
+        config: Path = typer.Option(Path("verixa.yaml"), help="Path to verixa.yaml."),
+        source: list[str] | None = typer.Option(
+            None,
+            "--source",
+            help="Optionally limit estimates to one or more source names.",
+        ),
+        changed_file: list[str] | None = typer.Option(
+            None,
+            "--changed-file",
+            help="Changed repo path used to auto-select sources. Repeat to select multiple.",
+        ),
+        changed_against: str | None = typer.Option(
+            None,
+            "--changed-against",
+            help="Use git diff against this ref to auto-select sources from verixa.targets.yaml.",
+        ),
+        targets_config: Path | None = typer.Option(
+            Path("verixa.targets.yaml"),
+            "--targets-config",
+            help="Optional path to changed-file targeting YAML.",
+        ),
+        max_bytes_billed: str | None = typer.Option(
+            None,
+            "--max-bytes-billed",
+            help="Compare estimates against a byte ceiling. Accepts values like 500MB or 1GB.",
+        ),
+        output: OutputFormat = typer.Option(OutputFormat.TEXT, "--format", help="Output format."),
+    ) -> None:
+        """Estimate BigQuery bytes processed for one Verixa workflow step."""
+
+        try:
+            selected_sources = _resolve_cli_source_names(
+                deps=active_deps,
+                config_path=config,
+                explicit_sources=tuple(source or ()),
+                changed_files=tuple(changed_file or ()),
+                changed_against=changed_against,
+                targets_path=targets_config,
+                output=output,
+            )
+            report = active_deps.run_cost(
+                config,
+                command=command,
+                source_names=selected_sources,
+                max_bytes_billed=_parse_max_bytes_billed(max_bytes_billed),
+            )
+            typer.echo(_render_cost_output(report, output))
+        except (ConfigError, ConnectorError, StorageError, ValueError) as exc:
+            _exit_with_error(str(exc), output)
+
+    return app
 
 
 def _run_diff_like_command(
     *,
+    deps: AppDeps,
     command_name: str,
     config: Path,
     risk_config: Path | None,
     source: list[str] | None,
+    changed_file: list[str] | None,
+    changed_against: str | None,
+    targets_config: Path | None,
     output: OutputFormat,
     estimate_bytes: bool,
+    max_bytes_billed: str | None,
 ) -> None:
     try:
-        selected_sources = tuple(source or ())
-        estimates = _estimate_bytes(config, selected_sources, command=command_name) if estimate_bytes else None
-        result = run_diff(config, risk_path=risk_config, source_names=selected_sources)
+        selected_sources = _resolve_cli_source_names(
+            deps=deps,
+            config_path=config,
+            explicit_sources=tuple(source or ()),
+            changed_files=tuple(changed_file or ()),
+            changed_against=changed_against,
+            targets_path=targets_config,
+            output=output,
+        )
+        parsed_max_bytes_billed = _parse_max_bytes_billed(max_bytes_billed)
+        estimates = (
+            deps.estimate_bytes(config, selected_sources, command=command_name)
+            if estimate_bytes
+            else None
+        )
+        result = deps.run_diff(
+            config,
+            risk_path=risk_config,
+            source_names=selected_sources,
+            max_bytes_billed=parsed_max_bytes_billed,
+        )
         typer.echo(_render_diff_output(result, "Diff", output, estimates))
     except (ConfigError, ConnectorError, StorageError, ValueError) as exc:
         _exit_with_error(str(exc), output)
 
 
-
 def _run_validate_like_command(
     *,
+    deps: AppDeps,
     command_name: str,
     config: Path,
     risk_config: Path | None,
     source: list[str] | None,
+    changed_file: list[str] | None,
+    changed_against: str | None,
+    targets_config: Path | None,
     output: OutputFormat,
     estimate_bytes: bool,
+    max_bytes_billed: str | None,
 ) -> None:
     try:
-        selected_sources = tuple(source or ())
-        estimates = _estimate_bytes(config, selected_sources, command=command_name) if estimate_bytes else None
-        result = run_validate(config, risk_path=risk_config, source_names=selected_sources)
+        selected_sources = _resolve_cli_source_names(
+            deps=deps,
+            config_path=config,
+            explicit_sources=tuple(source or ()),
+            changed_files=tuple(changed_file or ()),
+            changed_against=changed_against,
+            targets_path=targets_config,
+            output=output,
+        )
+        parsed_max_bytes_billed = _parse_max_bytes_billed(max_bytes_billed)
+        estimates = (
+            deps.estimate_bytes(config, selected_sources, command=command_name)
+            if estimate_bytes
+            else None
+        )
+        result = deps.run_validate(
+            config,
+            risk_path=risk_config,
+            source_names=selected_sources,
+            max_bytes_billed=parsed_max_bytes_billed,
+        )
         typer.echo(_render_diff_output(result, "Validate", output, estimates))
     except (ConfigError, ConnectorError, StorageError, ValueError) as exc:
         _exit_with_error(str(exc), output)
 
 
 
-def _render_snapshot_output(snapshot, baseline_path: Path, output: OutputFormat, estimated_bytes_by_source: dict[str, int] | None = None) -> str:
+def _resolve_cli_source_names(
+    *,
+    deps: AppDeps,
+    config_path: Path,
+    explicit_sources: tuple[str, ...],
+    changed_files: tuple[str, ...],
+    changed_against: str | None,
+    targets_path: Path | None,
+    output: OutputFormat,
+) -> tuple[str, ...]:
+    try:
+        return deps.resolve_source_names(
+            config_path,
+            explicit_source_names=explicit_sources,
+            changed_files=changed_files,
+            changed_against=changed_against,
+            targets_path=targets_path,
+        )
+    except (ConfigError, ConnectorError, StorageError, ValueError) as exc:
+        _exit_with_error(str(exc), output)
+
+
+def _render_snapshot_output(
+    snapshot: ProjectSnapshot,
+    baseline_path: Path,
+    output: OutputFormat,
+    estimated_bytes_by_source: dict[str, int] | None = None,
+) -> str:
     if output == OutputFormat.JSON:
         return render_snapshot_summary_json(snapshot, baseline_path, estimated_bytes_by_source)
     return render_snapshot_summary(snapshot, baseline_path, estimated_bytes_by_source)
-
 
 
 def _render_diff_output(
@@ -388,7 +673,6 @@ def _render_diff_output(
     if output == OutputFormat.JSON:
         return render_diff_result_json(result, title, estimated_bytes_by_source)
     return render_diff_result(result, title=title, estimated_bytes_by_source=estimated_bytes_by_source)
-
 
 
 def _render_status_output(report: StatusReport, output: OutputFormat) -> str:
@@ -409,6 +693,7 @@ def _render_status_output(report: StatusReport, output: OutputFormat) -> str:
             "message": report.auth_message,
         },
         "warehouse": report.warehouse_label,
+        "warehouse_max_bytes_billed": report.warehouse_max_bytes_billed,
         "sources": list(report.sources),
     }
     if output == OutputFormat.JSON:
@@ -430,6 +715,10 @@ def _render_status_output(report: StatusReport, output: OutputFormat) -> str:
 
     if report.warehouse_label is not None:
         lines.append(f"- Warehouse: {report.warehouse_label}")
+    if report.warehouse_max_bytes_billed is None:
+        lines.append("- Max bytes billed: none")
+    else:
+        lines.append(f"- Max bytes billed: {_format_bytes(report.warehouse_max_bytes_billed)}")
     if report.auth_ok is None:
         lines.append("- Auth: not checked")
     else:
@@ -442,13 +731,18 @@ def _render_status_output(report: StatusReport, output: OutputFormat) -> str:
     return "\n".join(lines)
 
 
-
 def _render_explain_output(payload: dict[str, Any], output: OutputFormat) -> str:
     if output == OutputFormat.JSON:
         return json.dumps(payload, indent=2, sort_keys=True) + "\n"
 
     lines = [payload["source_name"]]
     lines.append(f"- Table: {payload['table']}")
+    if payload["warehouse"]["max_bytes_billed"] is None:
+        lines.append("- Max bytes billed: none")
+    else:
+        lines.append(
+            f"- Max bytes billed: {_format_bytes(payload['warehouse']['max_bytes_billed'])}"
+        )
     if payload["freshness"] is None:
         lines.append("- Freshness: none")
     else:
@@ -492,16 +786,24 @@ def _render_explain_output(payload: dict[str, Any], output: OutputFormat) -> str
     return "\n".join(lines)
 
 
-
 def _render_cost_output(report: CostReport, output: OutputFormat) -> str:
     payload = {
         "command": report.command,
         "summary": {
             "sources_estimated": len(report.estimates),
             "total_bytes_processed": report.total_bytes,
+            "max_bytes_billed": report.max_bytes_billed,
+            "has_over_limit_sources": bool(report.over_limit_sources),
+            "over_limit_sources": list(report.over_limit_sources),
         },
         "sources": [
-            {"source_name": source_name, "estimated_bytes_processed": bytes_processed}
+            {
+                "source_name": source_name,
+                "estimated_bytes_processed": bytes_processed,
+                "over_max_bytes_billed": (
+                    report.max_bytes_billed is not None and bytes_processed > report.max_bytes_billed
+                ),
+            }
             for source_name, bytes_processed in sorted(report.estimates.items())
         ],
     }
@@ -510,10 +812,18 @@ def _render_cost_output(report: CostReport, output: OutputFormat) -> str:
 
     lines = [f"Cost {report.command}"]
     for source_name, bytes_processed in sorted(report.estimates.items()):
-        lines.append(f"- {source_name}: {_format_bytes(bytes_processed)}")
+        suffix = ""
+        if report.max_bytes_billed is not None and bytes_processed > report.max_bytes_billed:
+            suffix = " (over limit)"
+        lines.append(f"- {source_name}: {_format_bytes(bytes_processed)}{suffix}")
     lines.append(f"Total: {_format_bytes(report.total_bytes)}")
+    if report.max_bytes_billed is None:
+        lines.append("Max bytes billed: none")
+    else:
+        lines.append(f"Max bytes billed: {_format_bytes(report.max_bytes_billed)}")
+    if report.over_limit_sources:
+        lines.append(f"Would exceed limit: {', '.join(report.over_limit_sources)}")
     return "\n".join(lines)
-
 
 
 def _exit_with_error(message: str, output: OutputFormat = OutputFormat.TEXT) -> None:
@@ -524,15 +834,13 @@ def _exit_with_error(message: str, output: OutputFormat = OutputFormat.TEXT) -> 
     raise typer.Exit(code=RUNTIME_ERROR)
 
 
-
-def _estimate_bytes(
-    config_path: Path,
-    source_names: tuple[str, ...],
-    *,
-    command: str,
-) -> dict[str, int]:
-    return run_cost(config_path, command=command, source_names=source_names).estimates
-
+def _parse_max_bytes_billed(value: str | None) -> int | None:
+    if value is None:
+        return None
+    try:
+        return parse_byte_size(value)
+    except ValueError as exc:
+        raise ValueError(f"Invalid --max-bytes-billed value '{value}': {exc}") from exc
 
 
 def _format_age(seconds: int) -> str:
@@ -551,7 +859,6 @@ def _format_age(seconds: int) -> str:
     return " ".join(parts[:2])
 
 
-
 def _format_bytes(value: int) -> str:
     units = ("B", "KB", "MB", "GB", "TB")
     size = float(value)
@@ -563,6 +870,8 @@ def _format_bytes(value: int) -> str:
         size /= 1024
     return f"{int(value)} B"
 
+
+app = create_app()
 
 
 def main() -> None:

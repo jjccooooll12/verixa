@@ -2,16 +2,14 @@ from __future__ import annotations
 
 from typer.testing import CliRunner
 
-from verixa.cli.app import app
+from tests.cli.support import build_app
 from verixa.diff.models import DiffResult, Finding
 
 
-def test_check_command_does_not_fail_on_warning_only_results(monkeypatch) -> None:
+def test_check_command_does_not_fail_on_warning_only_results() -> None:
     runner = CliRunner()
-
-    monkeypatch.setattr(
-        "verixa.cli.app.run_check",
-        lambda config, risk_path=None, source_names=(): DiffResult(
+    app = build_app(
+        run_check=lambda config, risk_path=None, source_names=(), max_bytes_billed=None: DiffResult(
             findings=(
                 Finding(
                     source_name="stripe.transactions",
@@ -22,7 +20,7 @@ def test_check_command_does_not_fail_on_warning_only_results(monkeypatch) -> Non
             ),
             sources_checked=1,
             used_baseline=True,
-        ),
+        )
     )
 
     result = runner.invoke(app, ["check", "--fail-on-error"])
@@ -31,12 +29,10 @@ def test_check_command_does_not_fail_on_warning_only_results(monkeypatch) -> Non
     assert "warnings only" in result.stdout
 
 
-def test_check_command_can_fail_on_warning_when_requested(monkeypatch) -> None:
+def test_check_command_can_fail_on_warning_when_requested() -> None:
     runner = CliRunner()
-
-    monkeypatch.setattr(
-        "verixa.cli.app.run_check",
-        lambda config, risk_path=None, source_names=(): DiffResult(
+    app = build_app(
+        run_check=lambda config, risk_path=None, source_names=(), max_bytes_billed=None: DiffResult(
             findings=(
                 Finding(
                     source_name="stripe.transactions",
@@ -47,7 +43,7 @@ def test_check_command_can_fail_on_warning_when_requested(monkeypatch) -> None:
             ),
             sources_checked=1,
             used_baseline=True,
-        ),
+        )
     )
 
     result = runner.invoke(app, ["check", "--fail-on-warning"])
@@ -55,12 +51,10 @@ def test_check_command_can_fail_on_warning_when_requested(monkeypatch) -> None:
     assert result.exit_code == 1
 
 
-def test_check_command_fails_when_warning_policy_sources_exist(monkeypatch) -> None:
+def test_check_command_fails_when_warning_policy_sources_exist() -> None:
     runner = CliRunner()
-
-    monkeypatch.setattr(
-        "verixa.cli.app.run_check",
-        lambda config, risk_path=None, source_names=(): DiffResult(
+    app = build_app(
+        run_check=lambda config, risk_path=None, source_names=(), max_bytes_billed=None: DiffResult(
             findings=(
                 Finding(
                     source_name="stripe.transactions",
@@ -72,7 +66,7 @@ def test_check_command_fails_when_warning_policy_sources_exist(monkeypatch) -> N
             sources_checked=1,
             used_baseline=True,
             warning_policy_sources=("stripe.transactions",),
-        ),
+        )
     )
 
     result = runner.invoke(app, ["check"])
@@ -80,12 +74,10 @@ def test_check_command_fails_when_warning_policy_sources_exist(monkeypatch) -> N
     assert result.exit_code == 1
 
 
-def test_check_command_can_emit_json_output(monkeypatch) -> None:
+def test_check_command_can_emit_json_output() -> None:
     runner = CliRunner()
-
-    monkeypatch.setattr(
-        "verixa.cli.app.run_check",
-        lambda config, risk_path=None, source_names=(): DiffResult(
+    app = build_app(
+        run_check=lambda config, risk_path=None, source_names=(), max_bytes_billed=None: DiffResult(
             findings=(
                 Finding(
                     source_name="stripe.transactions",
@@ -96,7 +88,7 @@ def test_check_command_can_emit_json_output(monkeypatch) -> None:
             ),
             sources_checked=1,
             used_baseline=True,
-        ),
+        )
     )
 
     result = runner.invoke(app, ["check", "--format", "json"])

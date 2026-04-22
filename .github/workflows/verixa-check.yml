@@ -10,6 +10,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -39,8 +41,16 @@ jobs:
           printf '%s' "$GCP_SERVICE_ACCOUNT_KEY_JSON" > "$RUNNER_TEMP/gcp-key.json"
           echo "GOOGLE_APPLICATION_CREDENTIALS=$RUNNER_TEMP/gcp-key.json" >> "$GITHUB_ENV"
 
+      - name: Fetch base branch for changed-file targeting
+        run: git fetch --no-tags --prune --depth=1 origin main
+
       - name: Run Verixa check
-        run: verixa check --fail-on-error --format json > verixa-report.json
+        run: |
+          if test -f verixa.targets.yaml; then
+            verixa check --changed-against origin/main --fail-on-error --format json > verixa-report.json
+          else
+            verixa check --fail-on-error --format json > verixa-report.json
+          fi
 
       - name: Upload Verixa report
         uses: actions/upload-artifact@v4

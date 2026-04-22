@@ -81,10 +81,12 @@ class _FakeQueryJobConfig:
         query_parameters: list[object],
         dry_run: bool = False,
         use_query_cache: bool = True,
+        maximum_bytes_billed: int | None = None,
     ) -> None:
         self.query_parameters = query_parameters
         self.dry_run = dry_run
         self.use_query_cache = use_query_cache
+        self.maximum_bytes_billed = maximum_bytes_billed
 
 
 @pytest.fixture
@@ -293,6 +295,36 @@ def test_capture_source_applies_scan_window_to_bigquery_query(
     assert "WHERE `created_at` >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 604800 SECOND)" in (
         fake_client.last_query or ""
     )
+
+
+def test_capture_source_applies_max_bytes_billed_to_live_queries(
+    fake_bigquery_modules,  # noqa: ARG001
+    source_contract: SourceContract,
+) -> None:
+    connector = BigQueryConnector(
+        WarehouseConfig(
+            kind="bigquery",
+            project="demo",
+            location="US",
+            max_bytes_billed=5 * 1024 * 1024,
+        )
+    )
+    fake_client = _FakeClient(
+        row={
+            "null_rate__amount": 0.0,
+            "freshness_latest": datetime(2026, 4, 22, 11, 30, tzinfo=timezone.utc),
+            "invalid_count__currency": 0,
+            "invalid_examples__currency": [],
+        }
+    )
+    connector.__dict__["_client"] = fake_client
+
+    connector.capture_source(
+        source_contract,
+        SourceCaptureRequest.for_test(source_contract),
+    )
+
+    assert fake_client.last_job_config.maximum_bytes_billed == 5 * 1024 * 1024
 
 
 def test_estimate_source_bytes_uses_bigquery_dry_run(

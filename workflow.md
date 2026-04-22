@@ -11,6 +11,7 @@ Expected result:
 - a starter `verixa.yaml` is created
 - a local state directory such as `.verixa/` is created
 - an example file is created for downstream risk mapping
+- an example file is created for changed-file source targeting
 
 ### 2. Declare Source Contracts
 The user edits `verixa.yaml` and defines one or more source contracts.
@@ -32,6 +33,7 @@ Optional project-level `rules` can tune drift thresholds for:
 Optional source-level `rules` can override those thresholds for a specific table.
 Optional project-level `baseline.warning_age` can warn when the stored snapshot is too old to trust drift output.
 Optional project-level or source-level `check.fail_on_warning` can make warnings fail CI.
+Optional `warehouse.max_bytes_billed` can cap live BigQuery query cost.
 
 ### 3. Validate Contracts
 The user runs `verixa validate` against live BigQuery data.
@@ -46,6 +48,13 @@ Optional machine-readable output:
 
 Optional targeted run:
 - `verixa validate --source stripe.transactions`
+
+Optional changed-file targeting:
+- `verixa validate --changed-file models/staging/stripe/orders.sql`
+- `verixa validate --changed-against origin/main`
+
+Optional live-query ceiling:
+- `verixa validate --max-bytes-billed 500MB`
 
 ### 4. Capture Baseline
 The user runs `verixa snapshot` against live BigQuery data.
@@ -62,9 +71,16 @@ Optional targeted refresh:
 - `verixa snapshot --source stripe.transactions`
 - targeted snapshots merge into the existing baseline instead of removing unrelated sources
 
+Optional changed-file targeting:
+- `verixa snapshot --changed-file models/staging/stripe/orders.sql`
+- `verixa snapshot --changed-against origin/main`
+
 Optional estimate:
 - `verixa snapshot --estimate-bytes`
 - or `verixa cost snapshot`
+
+Optional live-query ceiling:
+- `verixa snapshot --max-bytes-billed 500MB`
 
 ### 5. Run Pre-Deploy Diff
 Before shipping upstream changes, the user runs `verixa diff`.
@@ -81,7 +97,11 @@ Current behavior:
 - it can warn when the stored baseline is stale
 - `verixa diff --format json` emits machine-readable findings for CI consumers
 - `--source` can restrict the run to one or more logical sources
+- `--changed-file` and `--changed-against` can auto-target sources through `verixa.targets.yaml`
+- explicit `--source` selection takes precedence over changed-file targeting
+- unmatched changed files fall back to all configured sources
 - `--estimate-bytes` can attach BigQuery dry-run byte estimates to the output
+- `--max-bytes-billed` can cap live query cost for the run
 - `verixa cost diff` estimates the same query shape without executing the full workflow
 
 ### 6. Run CI Check
@@ -99,6 +119,8 @@ Current behavior:
 - warning-only output still exits `0` unless warning failure policy is active
 - runtime, config, auth, or storage failures exit `2`
 - `verixa check --format json` emits deterministic JSON output
+- `--changed-file` and `--changed-against` can auto-target sources through `verixa.targets.yaml`
+- `--max-bytes-billed` can cap live query cost for the run
 - `verixa cost check` estimates the live query shape ahead of time
 
 ### 7. Inspect Environment and Configuration
@@ -109,6 +131,7 @@ It shows:
 - baseline found or missing
 - baseline age
 - warehouse auth status
+- configured `max_bytes_billed`
 - configured sources
 
 Use `verixa explain <source>` when you want to inspect one contract.
@@ -119,6 +142,7 @@ It shows:
 - tests
 - thresholds
 - scan window
+- effective `max_bytes_billed`
 - warning policy
 
 Use `verixa doctor` when you need diagnostics.
@@ -159,6 +183,8 @@ They are compatibility shims, not the preferred command names.
 11. Query narrowing, parallel capture, targeted source filtering, bounded scan windows, and baseline staleness warnings.
 12. DATE/DATETIME scan support, dry-run byte estimates, and warning-based CI policies.
 13. Verixa rebrand, command refinement, status, doctor, explain, and cost.
+14. Max-bytes-billed enforcement for live BigQuery query ceilings.
+15. Automatic changed-file to source targeting for CI-oriented runs.
 
 ### Update Process During Implementation
 When work starts on a task:
@@ -188,8 +214,9 @@ A minimal CI workflow should:
 1. install the package
 2. authenticate to Google Cloud
 3. restore or check out the baseline snapshot
-4. run `verixa check --fail-on-error --format json` if machine-readable logs are needed
-5. upload the JSON report as a workflow artifact if desired
+4. optionally fetch a base ref and use `verixa.targets.yaml` for changed-file targeting
+5. run `verixa check --fail-on-error --format json` if machine-readable logs are needed
+6. upload the JSON report as a workflow artifact if desired
 
 The repository includes an example workflow at:
 - `.github/workflows/verixa-check.yml`

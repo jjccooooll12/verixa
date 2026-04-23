@@ -12,7 +12,9 @@ from verixa.connectors.factory import create_connector, warehouse_label as forma
 from verixa.storage.filesystem import (
     SnapshotStore,
     StorageError,
+    baseline_path_requires_environment,
     create_snapshot_store,
+    format_missing_baseline_message,
     resolve_environment_name,
 )
 
@@ -26,6 +28,10 @@ class StatusReport:
     baseline_path: Path
     baseline_exists: bool
     baseline_age_seconds: int | None
+    baseline_stale: bool
+    baseline_warning_age_seconds: int | None
+    baseline_state: str
+    baseline_remediation: str | None
     baseline_error: str | None
     auth_ok: bool | None
     auth_message: str | None
@@ -48,6 +54,10 @@ def run_status(
     config_exists = resolved_config_path.exists()
     config_error: str | None = None
     baseline_error: str | None = None
+    baseline_stale = False
+    baseline_warning_age_seconds: int | None = None
+    baseline_state = "missing"
+    baseline_remediation: str | None = None
     auth_ok: bool | None = None
     auth_message: str | None = None
     warehouse_label: str | None = None
@@ -74,6 +84,7 @@ def run_status(
             warehouse_label = format_warehouse_label(config.warehouse)
             warehouse_max_bytes_billed = config.warehouse.max_bytes_billed
             sources = tuple(sorted(config.sources))
+            baseline_warning_age_seconds = config.baseline.warning_age_seconds
             connector = create_connector(config.warehouse)
             auth_ok, auth_message = connector.check_auth()
     else:
@@ -91,6 +102,30 @@ def run_status(
             baseline_age_seconds = int(
                 (datetime.now(timezone.utc) - snapshot.generated_at).total_seconds()
             )
+            if (
+                baseline_warning_age_seconds is not None
+                and baseline_age_seconds >= baseline_warning_age_seconds
+            ):
+                baseline_stale = True
+                baseline_remediation = "Refresh and promote a new baseline before trusting drift results."
+
+    if baseline_error is not None:
+        baseline_state = "error"
+    elif baseline_exists and baseline_stale:
+        baseline_state = "stale"
+    elif baseline_exists:
+        baseline_state = "ok"
+    elif config_exists and config_error is None:
+        if active_environment is not None and baseline_path_requires_environment(config.baseline.path):
+            baseline_state = "missing_for_environment"
+            baseline_remediation = format_missing_baseline_message(
+                existing_baseline_path,
+                environment=active_environment,
+                path_template=config.baseline.path,
+            )
+        else:
+            baseline_state = "missing"
+            baseline_remediation = "Run 'verixa snapshot' to capture a baseline before using diff or check."
 
     return StatusReport(
         config_path=resolved_config_path,
@@ -100,6 +135,10 @@ def run_status(
         baseline_path=existing_baseline_path,
         baseline_exists=baseline_exists,
         baseline_age_seconds=baseline_age_seconds,
+        baseline_stale=baseline_stale,
+        baseline_warning_age_seconds=baseline_warning_age_seconds,
+        baseline_state=baseline_state,
+        baseline_remediation=baseline_remediation,
         baseline_error=baseline_error,
         auth_ok=auth_ok,
         auth_message=auth_message,

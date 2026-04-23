@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TypeAlias
+from typing import Literal, TypeAlias
 
 from verixa.contracts.normalize import is_numeric_type
 
@@ -62,6 +62,7 @@ class AcceptedValuesTest:
 
 
 TestDefinition: TypeAlias = NoNullsTest | AcceptedValuesTest
+SeverityLevel: TypeAlias = Literal["error", "warning", "info"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,6 +135,7 @@ class SourceContract:
     scan: ScanConfig | None = None
     check: CheckConfig = field(default_factory=CheckConfig)
     rules: RulesConfig = field(default_factory=RulesConfig)
+    severity_overrides: dict[str, SeverityLevel] = field(default_factory=dict)
 
     @property
     def declared_columns(self) -> tuple[str, ...]:

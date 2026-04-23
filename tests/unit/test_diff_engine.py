@@ -56,6 +56,8 @@ def test_build_plan_result_attaches_risks_and_baseline_findings() -> None:
             "stripe.transactions": SourceRiskHints(
                 general=("likely undercount in dashboards",),
                 columns={"currency": ("likely to break finance models",)},
+                owners=("finance", "data-platform"),
+                criticality="high",
             )
         }
     )
@@ -71,6 +73,8 @@ def test_build_plan_result_attaches_risks_and_baseline_findings() -> None:
         "likely undercount in dashboards",
         "likely to break finance models",
     )
+    assert schema_finding.owners == ("finance", "data-platform")
+    assert schema_finding.source_criticality == "high"
 
 
 def test_build_plan_result_uses_source_level_rule_overrides() -> None:
@@ -163,12 +167,42 @@ def test_build_plan_result_tracks_warning_policy_sources() -> None:
     current = ProjectSnapshot(
         warehouse_kind="bigquery",
         generated_at=datetime(2026, 4, 22, 12, 0, tzinfo=timezone.utc),
-        sources={"stripe.transactions": make_source_snapshot(row_count=80)},
+        sources={"stripe.transactions": make_source_snapshot(row_count=79)},
     )
 
     result = build_plan_result(config, baseline, current)
 
     assert result.warning_policy_sources == ("stripe.transactions",)
+
+
+def test_build_plan_result_applies_severity_overrides_by_stable_code() -> None:
+    contract = SourceContract(
+        name="stripe.transactions",
+        table="raw.stripe_transactions",
+        schema={"amount": "FLOAT64"},
+        freshness=None,
+        tests=(),
+        severity_overrides={"drift.row_count_changed": "error"},
+    )
+    config = ProjectConfig(
+        warehouse=WarehouseConfig(kind="bigquery", project="demo"),
+        sources={"stripe.transactions": contract},
+    )
+    baseline = ProjectSnapshot(
+        warehouse_kind="bigquery",
+        generated_at=datetime(2026, 4, 22, 11, 0, tzinfo=timezone.utc),
+        sources={"stripe.transactions": make_source_snapshot(row_count=100)},
+    )
+    current = ProjectSnapshot(
+        warehouse_kind="bigquery",
+        generated_at=datetime(2026, 4, 22, 12, 0, tzinfo=timezone.utc),
+        sources={"stripe.transactions": make_source_snapshot(row_count=79)},
+    )
+
+    result = build_plan_result(config, baseline, current)
+
+    finding = next(finding for finding in result.findings if finding.code == "row_count_changed")
+    assert finding.severity == "error"
 
 
 def test_build_plan_result_includes_numeric_distribution_findings() -> None:

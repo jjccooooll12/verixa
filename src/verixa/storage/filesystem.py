@@ -73,9 +73,13 @@ class SnapshotStore:
         root: Path | None = None,
         *,
         baseline_path: Path | None = None,
+        baseline_path_template: str | None = None,
+        environment: str | None = None,
     ) -> None:
         self._root = root or Path(".verixa")
         self._baseline_path = baseline_path
+        self._baseline_path_template = baseline_path_template
+        self._environment = environment
 
     @property
     def baseline_path(self) -> Path:
@@ -111,9 +115,7 @@ class SnapshotStore:
     def read_baseline(self) -> ProjectSnapshot:
         path = self.baseline_path
         if not path.exists():
-            raise StorageError(
-                f"Baseline snapshot '{self.baseline_path}' was not found. Run 'verixa snapshot' first."
-            )
+            raise StorageError(self._missing_baseline_message(path))
         try:
             return loads_snapshot(path.read_text(encoding="utf-8"))
         except Exception as exc:
@@ -124,6 +126,13 @@ class SnapshotStore:
 
     def existing_baseline_path(self) -> Path:
         return self.baseline_path
+
+    def _missing_baseline_message(self, baseline_path: Path) -> str:
+        return format_missing_baseline_message(
+            baseline_path,
+            environment=self._environment,
+            path_template=self._baseline_path_template,
+        )
 
 
 def create_snapshot_store(
@@ -137,5 +146,30 @@ def create_snapshot_store(
         baseline_path=resolve_baseline_path(
             path_template,
             environment=environment,
-        )
+        ),
+        baseline_path_template=path_template,
+        environment=resolve_environment_name(environment),
     )
+
+
+def baseline_path_requires_environment(path_template: str) -> bool:
+    """Return whether a baseline path template is environment-scoped."""
+
+    return "{environment}" in path_template or "{env}" in path_template
+
+
+def format_missing_baseline_message(
+    baseline_path: Path,
+    *,
+    environment: str | None = None,
+    path_template: str | None = None,
+) -> str:
+    """Return a user-facing message for a missing baseline snapshot."""
+
+    if environment is not None and path_template is not None and baseline_path_requires_environment(path_template):
+        return (
+            f"Baseline snapshot for environment '{environment}' was not found at '{baseline_path}'. "
+            f"Run 'verixa snapshot --environment {environment}' first, or promote a proposal with "
+            f"'verixa baseline promote --environment {environment} --proposal-id <id>'."
+        )
+    return f"Baseline snapshot '{baseline_path}' was not found. Run 'verixa snapshot' first."

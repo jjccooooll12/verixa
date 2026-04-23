@@ -125,6 +125,14 @@ dbt:
   manifest_path: target/manifest.json
 """
 
+DEFAULT_SUPPRESSIONS_CONFIG = """suppressions:
+  - fingerprint: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    owner: data-platform
+    reason: temporary upstream rollout
+    expires_at: 2026-05-15T00:00:00Z
+    environments: [staging]
+"""
+
 
 def init_project(
     *,
@@ -137,20 +145,33 @@ def init_project(
     config_path = Path("verixa.yaml")
     risk_path = Path("verixa.risk.yaml.example")
     targets_path = Path("verixa.targets.yaml.example")
+    suppressions_path = Path("verixa.suppressions.yaml.example")
     store = SnapshotStore()
+    baseline_root = Path(".verixa") / "baselines" / "proposals"
 
-    for path in (config_path, risk_path, targets_path):
+    for path in (config_path, risk_path, targets_path, suppressions_path):
         if path.exists() and not force:
             raise FileExistsError(
                 f"'{path}' already exists. Use --force to overwrite starter files."
             )
 
     store.ensure_directory()
+    baseline_root.mkdir(parents=True, exist_ok=True)
 
     config_path.write_text(_starter_config(warehouse_kind), encoding="utf-8")
     risk_path.write_text(DEFAULT_RISK_CONFIG, encoding="utf-8")
     targets_path.write_text(DEFAULT_TARGETS_CONFIG, encoding="utf-8")
-    created_paths.extend([config_path, risk_path, targets_path, store.baseline_path.parent])
+    suppressions_path.write_text(DEFAULT_SUPPRESSIONS_CONFIG, encoding="utf-8")
+    created_paths.extend(
+        [
+            config_path,
+            risk_path,
+            targets_path,
+            suppressions_path,
+            store.baseline_path.parent,
+            baseline_root,
+        ]
+    )
     return created_paths
 
 

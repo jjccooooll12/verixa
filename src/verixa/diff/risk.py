@@ -17,6 +17,8 @@ class SourceRiskHints:
 
     general: tuple[str, ...]
     columns: dict[str, tuple[str, ...]]
+    owners: tuple[str, ...] = ()
+    criticality: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +55,8 @@ def load_risk_config(path: Path | None = None) -> RiskConfig | None:
         if not isinstance(raw_source, dict):
             raise ConfigError(f"Risk config for source '{source_name}' must be a mapping.")
         general = _parse_risk_list(raw_source.get("general", []), source_name)
+        owners = _parse_optional_string_list(raw_source.get("owners", []), source_name, "owners")
+        criticality = _parse_optional_criticality(raw_source.get("criticality"), source_name)
         raw_columns = raw_source.get("columns", {})
         if not isinstance(raw_columns, dict):
             raise ConfigError(
@@ -62,7 +66,12 @@ def load_risk_config(path: Path | None = None) -> RiskConfig | None:
             column_name: _parse_risk_list(values, source_name, column_name)
             for column_name, values in sorted(raw_columns.items())
         }
-        sources[source_name] = SourceRiskHints(general=general, columns=columns)
+        sources[source_name] = SourceRiskHints(
+            general=general,
+            columns=columns,
+            owners=owners,
+            criticality=criticality,
+        )
 
     return RiskConfig(sources=sources)
 
@@ -95,3 +104,34 @@ def _parse_risk_list(
             )
         values.append(item)
     return tuple(values)
+
+
+def _parse_optional_string_list(
+    raw_value: Any,
+    source_name: str,
+    field_name: str,
+) -> tuple[str, ...]:
+    if raw_value in (None, []):
+        return ()
+    if not isinstance(raw_value, list):
+        raise ConfigError(
+            f"Risk config for source '{source_name}' {field_name} must be a list of strings."
+        )
+    values: list[str] = []
+    for item in raw_value:
+        if not isinstance(item, str) or not item.strip():
+            raise ConfigError(
+                f"Risk config for source '{source_name}' {field_name} must contain only strings."
+            )
+        values.append(item.strip())
+    return tuple(values)
+
+
+def _parse_optional_criticality(raw_value: Any, source_name: str) -> str | None:
+    if raw_value is None:
+        return None
+    if raw_value not in {"low", "medium", "high"}:
+        raise ConfigError(
+            f"Risk config for source '{source_name}' criticality must be one of: low, medium, high."
+        )
+    return raw_value

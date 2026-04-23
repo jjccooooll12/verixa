@@ -14,7 +14,9 @@ from verixa.diff.models import DiffResult, Finding
 from verixa.storage.filesystem import (
     SnapshotStore,
     StorageError,
+    baseline_path_requires_environment,
     create_snapshot_store,
+    format_missing_baseline_message,
     resolve_environment_name,
 )
 
@@ -33,6 +35,7 @@ def run_doctor(
     findings: list[Finding] = []
     resolved_config_path = resolve_config_path(config_path)
     store = SnapshotStore()
+    active_environment = resolve_environment_name(environment)
 
     if not resolved_config_path.exists():
         findings.append(
@@ -61,7 +64,7 @@ def run_doctor(
     try:
         store = create_snapshot_store(
             config.baseline.path,
-            environment=resolve_environment_name(environment),
+            environment=active_environment,
         )
     except StorageError as exc:
         findings.append(
@@ -75,12 +78,20 @@ def run_doctor(
         return DiffResult(findings=tuple(findings), sources_checked=0, used_baseline=False)
 
     if not store.baseline_exists():
+        missing_for_environment = (
+            active_environment is not None
+            and baseline_path_requires_environment(config.baseline.path)
+        )
         findings.append(
             Finding(
                 source_name="baseline",
-                severity="warning",
-                code="baseline_missing",
-                message="baseline missing: run 'verixa snapshot' before 'verixa diff' or 'verixa check'",
+                severity="error" if missing_for_environment else "warning",
+                code="baseline_missing_for_environment" if missing_for_environment else "baseline_missing",
+                message=format_missing_baseline_message(
+                    store.baseline_path,
+                    environment=active_environment,
+                    path_template=config.baseline.path,
+                ),
             )
         )
     else:

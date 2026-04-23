@@ -101,6 +101,8 @@ sources:
     assert result.error_count >= 1
     assert "column removed: currency" in output
     assert "row count changed: 100 -> 40" in output
+    assert "Contract Violation" in output
+    assert "Baseline Drift" in output
     assert created_services[0].mode_seen == "plan"
 
 

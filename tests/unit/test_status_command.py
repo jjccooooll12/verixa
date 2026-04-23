@@ -41,4 +41,34 @@ sources:
     assert report.baseline_path == Path(".verixa/{environment}/baseline.json")
     assert report.baseline_error is not None
     assert "requires an environment" in report.baseline_error
+    assert report.baseline_state == "error"
     assert report.auth_ok is True
+
+
+def test_run_status_reports_missing_environment_baseline_with_remediation(tmp_path: Path) -> None:
+    config_path = tmp_path / "verixa.yaml"
+    config_path.write_text(
+        """
+warehouse:
+  kind: bigquery
+  project: demo
+baseline:
+  path: .verixa/{environment}/baseline.json
+sources:
+  stripe.transactions:
+    table: raw.stripe_transactions
+    schema:
+      amount: float
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with patch("verixa.cli.status.create_connector", lambda warehouse: _FakeConnector(warehouse)):
+        report = run_status(config_path, environment="prod")
+
+    assert report.environment == "prod"
+    assert report.baseline_exists is False
+    assert report.baseline_state == "missing_for_environment"
+    assert report.baseline_remediation is not None
+    assert "verixa snapshot --environment prod" in report.baseline_remediation

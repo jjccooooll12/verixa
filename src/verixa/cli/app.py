@@ -4,12 +4,20 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any, Callable
 
 import typer
 
+from verixa.baselines.models import BaselineProposal, BaselineStatusReport
+from verixa.cli.baseline import (
+    run_baseline_accept as _run_baseline_accept_impl,
+    run_baseline_promote as _run_baseline_promote_impl,
+    run_baseline_propose as _run_baseline_propose_impl,
+    run_baseline_status as _run_baseline_status_impl,
+)
 from verixa.cli.check import run_check as _run_check_impl
 from verixa.cli.cost import CostReport, run_cost as _run_cost_impl
 from verixa.cli.diff import run_diff as _run_diff_impl
@@ -22,24 +30,42 @@ from verixa.cli.validate import run_validate as _run_validate_impl
 from verixa.config.errors import ConfigError
 from verixa.connectors.base import ConnectorError
 from verixa.contracts.normalize import parse_byte_size, parse_duration_to_seconds
-from verixa.diff.models import DiffResult
+from verixa.diff.models import DiffResult, Finding
+from verixa.history.classifier import LifecycleReport, classify_finding_lifecycle
+from verixa.history.store import HistoryStoreError, RunHistoryStore
+from verixa.findings.schema import normalize_diff_result
+from verixa.output.github_annotations import render_diff_result_github_annotations
 from verixa.output.console import render_diff_result, render_snapshot_summary
 from verixa.output.exit_codes import FINDINGS_ERROR, RUNTIME_ERROR, SUCCESS
+from verixa.output.github_markdown import render_diff_result_github_markdown
 from verixa.output.json import (
     render_diff_result_json,
     render_error_json,
     render_snapshot_summary_json,
 )
+from verixa.policy.export import render_diff_result_policy_v1
 from verixa.snapshot.models import ProjectSnapshot
 from verixa.storage.filesystem import StorageError
+from verixa.suppressions import SuppressionError, apply_suppressions, load_suppressions
+from verixa.suppressions.loader import split_active_and_expired
 from verixa.targeting import resolve_source_names as _resolve_source_names_impl
 
 
-class OutputFormat(str, Enum):
-    """Output formats supported by the CLI."""
+class BasicOutputFormat(str, Enum):
+    """Output formats supported by non-diff CLI commands."""
 
     TEXT = "text"
     JSON = "json"
+
+
+class FindingOutputFormat(str, Enum):
+    """Output formats supported by diff-like CLI commands."""
+
+    TEXT = "text"
+    JSON = "json"
+    GITHUB_MARKDOWN = "github-markdown"
+    GITHUB_ANNOTATIONS = "github-annotations"
+    POLICY_V1 = "policy-v1"
 
 
 class InitWarehouse(str, Enum):
@@ -55,6 +81,10 @@ class AppDeps:
 
     init_project: Callable[..., list[Path]]
     run_snapshot: Callable[..., tuple[ProjectSnapshot, Path]]
+    run_baseline_status: Callable[..., BaselineStatusReport]
+    run_baseline_propose: Callable[..., BaselineProposal]
+    run_baseline_promote: Callable[..., Path]
+    run_baseline_accept: Callable[..., BaselineProposal]
     run_diff: Callable[..., DiffResult]
     run_validate: Callable[..., DiffResult]
     run_check: Callable[..., DiffResult]
@@ -83,6 +113,10 @@ def _estimate_bytes_impl(
 DEFAULT_APP_DEPS = AppDeps(
     init_project=_init_project_impl,
     run_snapshot=_run_snapshot_impl,
+    run_baseline_status=_run_baseline_status_impl,
+    run_baseline_propose=_run_baseline_propose_impl,
+    run_baseline_promote=_run_baseline_promote_impl,
+    run_baseline_accept=_run_baseline_accept_impl,
     run_diff=_run_diff_impl,
     run_validate=_run_validate_impl,
     run_check=_run_check_impl,
@@ -100,6 +134,8 @@ def create_app(deps: AppDeps | None = None) -> typer.Typer:
 
     active_deps = deps or DEFAULT_APP_DEPS
     app = typer.Typer(add_completion=False, help="Verixa: developer-first Data CI for source contracts.")
+    baseline_app = typer.Typer(help="Baseline lifecycle commands.")
+    app.add_typer(baseline_app, name="baseline")
 
     @app.command("init")
     def init_command(
@@ -135,8 +171,8 @@ def create_app(deps: AppDeps | None = None) -> typer.Typer:
             "--environment",
             help="Select a baseline environment when baseline.path uses {environment} or {env}. Falls back to VERIXA_ENV.",
         ),
-        output: OutputFormat = typer.Option(
-            OutputFormat.TEXT,
+        output: BasicOutputFormat = typer.Option(
+            BasicOutputFormat.TEXT,
             "--format",
             help="Output format.",
         ),
@@ -194,6 +230,104 @@ def create_app(deps: AppDeps | None = None) -> typer.Typer:
         except (ConfigError, ConnectorError, StorageError, ValueError) as exc:
             _exit_with_error(str(exc), output)
 
+    @baseline_app.command("status")
+    def baseline_status_command(
+        config: Path = typer.Option(Path("verixa.yaml"), help="Path to verixa.yaml."),
+        environment: str = typer.Option(..., "--environment", help="Baseline environment to inspect."),
+        output: BasicOutputFormat = typer.Option(BasicOutputFormat.TEXT, "--format", help="Output format."),
+    ) -> None:
+        """Show the promoted baseline state and pending proposals for one environment."""
+
+        try:
+            report = active_deps.run_baseline_status(
+                config,
+                environment=environment,
+            )
+            typer.echo(_render_baseline_status_output(report, output))
+        except (ConfigError, ConnectorError, StorageError, ValueError) as exc:
+            _exit_with_error(str(exc), output)
+
+    @baseline_app.command("propose")
+    def baseline_propose_command(
+        config: Path = typer.Option(Path("verixa.yaml"), help="Path to verixa.yaml."),
+        environment: str = typer.Option(..., "--environment", help="Target baseline environment."),
+        reason: str = typer.Option(..., "--reason", help="Why this baseline change is expected."),
+        source: list[str] | None = typer.Option(
+            None,
+            "--source",
+            help="Limit the proposal to one or more source names. Repeat to select multiple.",
+        ),
+        max_bytes_billed: str | None = typer.Option(
+            None,
+            "--max-bytes-billed",
+            help="Cap live BigQuery query bytes for this run. Accepts values like 500MB or 1GB.",
+        ),
+        output: BasicOutputFormat = typer.Option(BasicOutputFormat.TEXT, "--format", help="Output format."),
+    ) -> None:
+        """Capture a proposed baseline for later promotion."""
+
+        try:
+            proposal = active_deps.run_baseline_propose(
+                config,
+                environment=environment,
+                reason=reason,
+                source_names=tuple(source or ()),
+                max_bytes_billed=_parse_max_bytes_billed(max_bytes_billed),
+            )
+            typer.echo(_render_baseline_proposal_output(proposal, output))
+        except (ConfigError, ConnectorError, StorageError, ValueError) as exc:
+            _exit_with_error(str(exc), output)
+
+    @baseline_app.command("promote")
+    def baseline_promote_command(
+        config: Path = typer.Option(Path("verixa.yaml"), help="Path to verixa.yaml."),
+        environment: str = typer.Option(..., "--environment", help="Target baseline environment."),
+        proposal_id: str = typer.Option(..., "--proposal-id", help="Proposal id to promote."),
+        output: BasicOutputFormat = typer.Option(BasicOutputFormat.TEXT, "--format", help="Output format."),
+    ) -> None:
+        """Promote a proposed baseline into the active environment baseline."""
+
+        try:
+            baseline_path = active_deps.run_baseline_promote(
+                config,
+                environment=environment,
+                proposal_id=proposal_id,
+            )
+            typer.echo(_render_baseline_promote_output(proposal_id, baseline_path, output))
+        except (ConfigError, ConnectorError, StorageError, ValueError) as exc:
+            _exit_with_error(str(exc), output)
+
+    @baseline_app.command("accept")
+    def baseline_accept_command(
+        config: Path = typer.Option(Path("verixa.yaml"), help="Path to verixa.yaml."),
+        environment: str = typer.Option(..., "--environment", help="Target baseline environment."),
+        reason: str = typer.Option(..., "--reason", help="Why this baseline change should be accepted."),
+        source: list[str] | None = typer.Option(
+            None,
+            "--source",
+            help="Limit the acceptance proposal to one or more source names. Repeat to select multiple.",
+        ),
+        max_bytes_billed: str | None = typer.Option(
+            None,
+            "--max-bytes-billed",
+            help="Cap live BigQuery query bytes for this run. Accepts values like 500MB or 1GB.",
+        ),
+        output: BasicOutputFormat = typer.Option(BasicOutputFormat.TEXT, "--format", help="Output format."),
+    ) -> None:
+        """Capture an acceptance proposal for an expected baseline change."""
+
+        try:
+            proposal = active_deps.run_baseline_accept(
+                config,
+                environment=environment,
+                reason=reason,
+                source_names=tuple(source or ()),
+                max_bytes_billed=_parse_max_bytes_billed(max_bytes_billed),
+            )
+            typer.echo(_render_baseline_proposal_output(proposal, output))
+        except (ConfigError, ConnectorError, StorageError, ValueError) as exc:
+            _exit_with_error(str(exc), output)
+
     @app.command("diff")
     def diff_command(
         config: Path = typer.Option(Path("verixa.yaml"), help="Path to verixa.yaml."),
@@ -211,8 +345,8 @@ def create_app(deps: AppDeps | None = None) -> typer.Typer:
             "--environment",
             help="Select a baseline environment when baseline.path uses {environment} or {env}. Falls back to VERIXA_ENV.",
         ),
-        output: OutputFormat = typer.Option(
-            OutputFormat.TEXT,
+        output: FindingOutputFormat = typer.Option(
+            FindingOutputFormat.TEXT,
             "--format",
             help="Output format.",
         ),
@@ -265,7 +399,7 @@ def create_app(deps: AppDeps | None = None) -> typer.Typer:
         risk_config: Path | None = typer.Option(Path("verixa.risk.yaml")),
         source: list[str] | None = typer.Option(None, "--source"),
         environment: str | None = typer.Option(None, "--environment"),
-        output: OutputFormat = typer.Option(OutputFormat.TEXT, "--format"),
+        output: FindingOutputFormat = typer.Option(FindingOutputFormat.TEXT, "--format"),
         changed_file: list[str] | None = typer.Option(None, "--changed-file"),
         changed_against: str | None = typer.Option(None, "--changed-against"),
         targets_config: Path | None = typer.Option(Path("verixa.targets.yaml"), "--targets-config"),
@@ -301,8 +435,8 @@ def create_app(deps: AppDeps | None = None) -> typer.Typer:
             "--source",
             help="Limit the command to one or more source names. Repeat to select multiple.",
         ),
-        output: OutputFormat = typer.Option(
-            OutputFormat.TEXT,
+        output: FindingOutputFormat = typer.Option(
+            FindingOutputFormat.TEXT,
             "--format",
             help="Output format.",
         ),
@@ -353,7 +487,7 @@ def create_app(deps: AppDeps | None = None) -> typer.Typer:
         config: Path = typer.Option(Path("verixa.yaml"), help="Path to verixa.yaml."),
         risk_config: Path | None = typer.Option(Path("verixa.risk.yaml")),
         source: list[str] | None = typer.Option(None, "--source"),
-        output: OutputFormat = typer.Option(OutputFormat.TEXT, "--format"),
+        output: FindingOutputFormat = typer.Option(FindingOutputFormat.TEXT, "--format"),
         changed_file: list[str] | None = typer.Option(None, "--changed-file"),
         changed_against: str | None = typer.Option(None, "--changed-against"),
         targets_config: Path | None = typer.Option(Path("verixa.targets.yaml"), "--targets-config"),
@@ -403,8 +537,8 @@ def create_app(deps: AppDeps | None = None) -> typer.Typer:
             "--environment",
             help="Select a baseline environment when baseline.path uses {environment} or {env}. Falls back to VERIXA_ENV.",
         ),
-        output: OutputFormat = typer.Option(
-            OutputFormat.TEXT,
+        output: FindingOutputFormat = typer.Option(
+            FindingOutputFormat.TEXT,
             "--format",
             help="Output format.",
         ),
@@ -459,16 +593,37 @@ def create_app(deps: AppDeps | None = None) -> typer.Typer:
                 environment=environment,
                 max_bytes_billed=parsed_max_bytes_billed,
             )
-            typer.echo(_render_diff_output(result, "Check", output, estimates))
-        except (ConfigError, ConnectorError, StorageError, ValueError) as exc:
+            lifecycle_report = _build_lifecycle_report(
+                result,
+                command_name="check",
+                environment=environment,
+                estimated_bytes_by_source=estimates,
+            )
+            filtered_result, filtered_lifecycle = _apply_cli_suppressions(
+                result,
+                environment=environment,
+                lifecycle_report=lifecycle_report,
+                estimated_bytes_by_source=estimates,
+            )
+            typer.echo(
+                _render_diff_output(
+                    filtered_result,
+                    "Check",
+                    output,
+                    estimates,
+                    filtered_lifecycle,
+                    environment=environment,
+                )
+            )
+        except (ConfigError, ConnectorError, StorageError, SuppressionError, ValueError) as exc:
             _exit_with_error(str(exc), output)
 
         should_fail = False
-        if fail_on_error and result.error_count > 0:
+        if fail_on_error and filtered_result.error_count > 0:
             should_fail = True
-        if fail_on_warning and result.warning_count > 0:
+        if fail_on_warning and filtered_result.warning_count > 0:
             should_fail = True
-        if result.warning_policy_failure_count > 0:
+        if filtered_result.warning_policy_failure_count > 0:
             should_fail = True
         if should_fail:
             raise typer.Exit(code=FINDINGS_ERROR)
@@ -487,7 +642,7 @@ def create_app(deps: AppDeps | None = None) -> typer.Typer:
             "--environment",
             help="Select a baseline environment when baseline.path uses {environment} or {env}. Falls back to VERIXA_ENV.",
         ),
-        output: OutputFormat = typer.Option(OutputFormat.TEXT, "--format", help="Output format."),
+        output: BasicOutputFormat = typer.Option(BasicOutputFormat.TEXT, "--format", help="Output format."),
     ) -> None:
         """Show config, baseline, auth, and source status."""
 
@@ -514,7 +669,7 @@ def create_app(deps: AppDeps | None = None) -> typer.Typer:
             "--environment",
             help="Select a baseline environment when baseline.path uses {environment} or {env}. Falls back to VERIXA_ENV.",
         ),
-        output: OutputFormat = typer.Option(OutputFormat.TEXT, "--format", help="Output format."),
+        output: FindingOutputFormat = typer.Option(FindingOutputFormat.TEXT, "--format", help="Output format."),
     ) -> None:
         """Run diagnostics for config, auth, baseline, and source access."""
 
@@ -524,8 +679,33 @@ def create_app(deps: AppDeps | None = None) -> typer.Typer:
                 source_names=tuple(source or ()),
                 environment=environment,
             )
-            typer.echo(_render_diff_output(result, "Doctor", output))
-        except (ConfigError, ConnectorError, StorageError) as exc:
+            if expired_findings := _expired_suppression_findings():
+                result = DiffResult(
+                    findings=tuple(
+                        sorted(
+                            result.findings + expired_findings,
+                            key=lambda item: (item.source_name, item.code, item.column or ""),
+                        )
+                    ),
+                    sources_checked=result.sources_checked,
+                    used_baseline=result.used_baseline,
+                    warning_policy_sources=result.warning_policy_sources,
+                )
+            lifecycle_report = _build_lifecycle_report(
+                result,
+                command_name="doctor",
+                environment=environment,
+            )
+            typer.echo(
+                _render_diff_output(
+                    result,
+                    "Doctor",
+                    output,
+                    lifecycle_report=lifecycle_report,
+                    environment=environment,
+                )
+            )
+        except (ConfigError, ConnectorError, StorageError, SuppressionError) as exc:
             _exit_with_error(str(exc), output)
 
         if result.error_count > 0:
@@ -536,7 +716,7 @@ def create_app(deps: AppDeps | None = None) -> typer.Typer:
     def explain_command(
         source_name: str = typer.Argument(..., help="Logical source name to explain."),
         config: Path = typer.Option(Path("verixa.yaml"), help="Path to verixa.yaml."),
-        output: OutputFormat = typer.Option(OutputFormat.TEXT, "--format", help="Output format."),
+        output: BasicOutputFormat = typer.Option(BasicOutputFormat.TEXT, "--format", help="Output format."),
     ) -> None:
         """Show one source contract in a human-readable form."""
 
@@ -583,7 +763,7 @@ def create_app(deps: AppDeps | None = None) -> typer.Typer:
             "--history-window",
             help="For Snowflake, report recent warehouse usage within this lookback window, for example 30m or 1h.",
         ),
-        output: OutputFormat = typer.Option(OutputFormat.TEXT, "--format", help="Output format."),
+        output: BasicOutputFormat = typer.Option(BasicOutputFormat.TEXT, "--format", help="Output format."),
     ) -> None:
         """Estimate BigQuery bytes or report recent Snowflake usage for one workflow step."""
 
@@ -622,7 +802,7 @@ def _run_diff_like_command(
     changed_file: list[str] | None,
     changed_against: str | None,
     targets_config: Path | None,
-    output: OutputFormat,
+    output: FindingOutputFormat,
     estimate_bytes: bool,
     max_bytes_billed: str | None,
 ) -> None:
@@ -639,7 +819,7 @@ def _run_diff_like_command(
         parsed_max_bytes_billed = _parse_max_bytes_billed(max_bytes_billed)
         estimates = (
             deps.estimate_bytes(config, selected_sources, command=command_name)
-            if estimate_bytes
+        if estimate_bytes
             else None
         )
         result = deps.run_diff(
@@ -649,8 +829,29 @@ def _run_diff_like_command(
             environment=environment,
             max_bytes_billed=parsed_max_bytes_billed,
         )
-        typer.echo(_render_diff_output(result, "Diff", output, estimates))
-    except (ConfigError, ConnectorError, StorageError, ValueError) as exc:
+        lifecycle_report = _build_lifecycle_report(
+            result,
+            command_name=command_name,
+            environment=environment,
+            estimated_bytes_by_source=estimates,
+        )
+        filtered_result, filtered_lifecycle = _apply_cli_suppressions(
+            result,
+            environment=environment,
+            lifecycle_report=lifecycle_report,
+            estimated_bytes_by_source=estimates,
+        )
+        typer.echo(
+            _render_diff_output(
+                filtered_result,
+                "Diff",
+                output,
+                estimates,
+                filtered_lifecycle,
+                environment=environment,
+            )
+        )
+    except (ConfigError, ConnectorError, StorageError, SuppressionError, ValueError) as exc:
         _exit_with_error(str(exc), output)
 
 
@@ -664,7 +865,7 @@ def _run_validate_like_command(
     changed_file: list[str] | None,
     changed_against: str | None,
     targets_config: Path | None,
-    output: OutputFormat,
+    output: FindingOutputFormat,
     estimate_bytes: bool,
     max_bytes_billed: str | None,
 ) -> None:
@@ -690,8 +891,29 @@ def _run_validate_like_command(
             source_names=selected_sources,
             max_bytes_billed=parsed_max_bytes_billed,
         )
-        typer.echo(_render_diff_output(result, "Validate", output, estimates))
-    except (ConfigError, ConnectorError, StorageError, ValueError) as exc:
+        lifecycle_report = _build_lifecycle_report(
+            result,
+            command_name=command_name,
+            environment=None,
+            estimated_bytes_by_source=estimates,
+        )
+        filtered_result, filtered_lifecycle = _apply_cli_suppressions(
+            result,
+            environment=None,
+            lifecycle_report=lifecycle_report,
+            estimated_bytes_by_source=estimates,
+        )
+        typer.echo(
+            _render_diff_output(
+                filtered_result,
+                "Validate",
+                output,
+                estimates,
+                filtered_lifecycle,
+                environment=None,
+            )
+        )
+    except (ConfigError, ConnectorError, StorageError, SuppressionError, ValueError) as exc:
         _exit_with_error(str(exc), output)
 
 
@@ -704,7 +926,7 @@ def _resolve_cli_source_names(
     changed_files: tuple[str, ...],
     changed_against: str | None,
     targets_path: Path | None,
-    output: OutputFormat,
+    output: BasicOutputFormat | FindingOutputFormat,
 ) -> tuple[str, ...]:
     try:
         return deps.resolve_source_names(
@@ -721,10 +943,10 @@ def _resolve_cli_source_names(
 def _render_snapshot_output(
     snapshot: ProjectSnapshot,
     baseline_path: Path,
-    output: OutputFormat,
+    output: BasicOutputFormat,
     estimated_bytes_by_source: dict[str, int] | None = None,
 ) -> str:
-    if output == OutputFormat.JSON:
+    if output == BasicOutputFormat.JSON:
         return render_snapshot_summary_json(snapshot, baseline_path, estimated_bytes_by_source)
     return render_snapshot_summary(snapshot, baseline_path, estimated_bytes_by_source)
 
@@ -732,15 +954,119 @@ def _render_snapshot_output(
 def _render_diff_output(
     result: DiffResult,
     title: str,
-    output: OutputFormat,
+    output: FindingOutputFormat,
     estimated_bytes_by_source: dict[str, int] | None = None,
+    lifecycle_report: LifecycleReport | None = None,
+    environment: str | None = None,
 ) -> str:
-    if output == OutputFormat.JSON:
-        return render_diff_result_json(result, title, estimated_bytes_by_source)
-    return render_diff_result(result, title=title, estimated_bytes_by_source=estimated_bytes_by_source)
+    if output == FindingOutputFormat.JSON:
+        return render_diff_result_json(
+            result,
+            title,
+            estimated_bytes_by_source,
+            lifecycle_report=lifecycle_report,
+            environment=environment,
+        )
+    if output == FindingOutputFormat.POLICY_V1:
+        return render_diff_result_policy_v1(
+            result,
+            title,
+            estimated_bytes_by_source,
+            lifecycle_report=lifecycle_report,
+            environment=environment,
+        )
+    if output == FindingOutputFormat.GITHUB_MARKDOWN:
+        return render_diff_result_github_markdown(
+            result,
+            title,
+            estimated_bytes_by_source,
+            lifecycle_report=lifecycle_report,
+        )
+    if output == FindingOutputFormat.GITHUB_ANNOTATIONS:
+        return render_diff_result_github_annotations(
+            result,
+            title,
+            estimated_bytes_by_source,
+            lifecycle_report=lifecycle_report,
+        )
+    return render_diff_result(
+        result,
+        title=title,
+        estimated_bytes_by_source=estimated_bytes_by_source,
+        lifecycle_report=lifecycle_report,
+    )
 
 
-def _render_status_output(report: StatusReport, output: OutputFormat) -> str:
+def _build_lifecycle_report(
+    result: DiffResult,
+    *,
+    command_name: str,
+    environment: str | None,
+    estimated_bytes_by_source: dict[str, int] | None = None,
+) -> LifecycleReport | None:
+    try:
+        normalized = normalize_diff_result(
+            result,
+            estimated_bytes_by_source=estimated_bytes_by_source,
+        )
+        store = RunHistoryStore()
+        previous = store.read_last_run(command_name, environment=environment)
+        lifecycle = classify_finding_lifecycle(
+            normalized,
+            () if previous is None else previous.findings,
+        )
+        store.write_run(
+            command_name,
+            lifecycle.active_findings,
+            environment=environment,
+        )
+        return lifecycle
+    except HistoryStoreError:
+        return None
+
+
+def _apply_cli_suppressions(
+    result: DiffResult,
+    *,
+    environment: str | None,
+    lifecycle_report: LifecycleReport | None,
+    estimated_bytes_by_source: dict[str, int] | None = None,
+) -> tuple[DiffResult, LifecycleReport | None]:
+    rules = load_suppressions()
+    if not rules:
+        return result, lifecycle_report
+    outcome = apply_suppressions(
+        result,
+        environment=environment,
+        rules=rules,
+        lifecycle_report=lifecycle_report,
+        estimated_bytes_by_source=estimated_bytes_by_source,
+    )
+    return outcome.result, outcome.lifecycle_report
+
+
+def _expired_suppression_findings() -> tuple[Finding, ...]:
+    rules = load_suppressions()
+    if not rules:
+        return ()
+    _, expired_rules = split_active_and_expired(rules, now=datetime.now(timezone.utc))
+    findings = []
+    for rule in expired_rules:
+        findings.append(
+            Finding(
+                source_name="suppressions",
+                severity="warning",
+                code="suppression_expired",
+                message=(
+                    f"expired suppression for fingerprint {rule.fingerprint} owned by {rule.owner}; "
+                    f"remove it or renew it with a new expiry. Reason: {rule.reason}"
+                ),
+            )
+        )
+    return tuple(findings)
+
+
+def _render_status_output(report: StatusReport, output: BasicOutputFormat) -> str:
     payload: dict[str, Any] = {
         "config": {
             "path": str(report.config_path),
@@ -752,6 +1078,10 @@ def _render_status_output(report: StatusReport, output: OutputFormat) -> str:
             "path": str(report.baseline_path),
             "exists": report.baseline_exists,
             "age_seconds": report.baseline_age_seconds,
+            "state": report.baseline_state,
+            "stale": report.baseline_stale,
+            "warning_age_seconds": report.baseline_warning_age_seconds,
+            "remediation": report.baseline_remediation,
             "error": report.baseline_error,
         },
         "auth": {
@@ -762,7 +1092,7 @@ def _render_status_output(report: StatusReport, output: OutputFormat) -> str:
         "warehouse_max_bytes_billed": report.warehouse_max_bytes_billed,
         "sources": list(report.sources),
     }
-    if output == OutputFormat.JSON:
+    if output == BasicOutputFormat.JSON:
         return json.dumps(payload, indent=2, sort_keys=True) + "\n"
 
     lines = ["Status"]
@@ -776,13 +1106,13 @@ def _render_status_output(report: StatusReport, output: OutputFormat) -> str:
     else:
         lines.append(f"- Environment: {report.environment}")
 
-    baseline_state = "OK" if report.baseline_exists and report.baseline_error is None else "MISSING"
-    if report.baseline_error is not None:
-        baseline_state = "ERROR"
+    baseline_state = report.baseline_state.upper()
     baseline_line = f"- Baseline: {baseline_state} {report.baseline_path}"
     if report.baseline_age_seconds is not None:
         baseline_line += f" ({_format_age(report.baseline_age_seconds)} old)"
     lines.append(baseline_line)
+    if report.baseline_remediation is not None:
+        lines.append(f"- Baseline remediation: {report.baseline_remediation}")
 
     if report.warehouse_label is not None:
         lines.append(f"- Warehouse: {report.warehouse_label}")
@@ -802,8 +1132,123 @@ def _render_status_output(report: StatusReport, output: OutputFormat) -> str:
     return "\n".join(lines)
 
 
-def _render_explain_output(payload: dict[str, Any], output: OutputFormat) -> str:
-    if output == OutputFormat.JSON:
+def _render_baseline_status_output(
+    report: BaselineStatusReport,
+    output: BasicOutputFormat,
+) -> str:
+    payload = {
+        "environment": report.environment,
+        "baseline": {
+            "path": str(report.baseline_path),
+            "exists": report.baseline_exists,
+            "age_seconds": report.baseline_age_seconds,
+            "stale": report.baseline_stale,
+            "warning_age_seconds": report.warning_age_seconds,
+            "current_proposal_id": report.current_proposal_id,
+            "current_reason": report.current_reason,
+            "current_created_at": None
+            if report.current_created_at is None
+            else report.current_created_at.isoformat().replace("+00:00", "Z"),
+            "current_created_by": report.current_created_by,
+            "current_git_sha": report.current_git_sha,
+            "current_promoted_at": None
+            if report.current_promoted_at is None
+            else report.current_promoted_at.isoformat().replace("+00:00", "Z"),
+            "current_promoted_by": report.current_promoted_by,
+            "remediation": report.remediation,
+        },
+        "pending_proposals": list(report.pending_proposals),
+    }
+    if output == BasicOutputFormat.JSON:
+        return json.dumps(payload, indent=2, sort_keys=True) + "\n"
+
+    lines = [f"Baseline {report.environment}"]
+    state = "STALE" if report.baseline_stale else ("OK" if report.baseline_exists else "MISSING")
+    line = f"- Current: {state} {report.baseline_path}"
+    if report.baseline_age_seconds is not None:
+        line += f" ({_format_age(report.baseline_age_seconds)} old)"
+    lines.append(line)
+    if report.current_proposal_id is not None:
+        lines.append(f"- Current proposal: {report.current_proposal_id}")
+    if report.current_reason is not None:
+        lines.append(f"- Current reason: {report.current_reason}")
+    if report.current_created_at is not None:
+        lines.append(
+            f"- Captured at: {report.current_created_at.isoformat().replace('+00:00', 'Z')}"
+        )
+    if report.current_created_by is not None:
+        lines.append(f"- Captured by: {report.current_created_by}")
+    if report.current_git_sha is not None:
+        lines.append(f"- Git SHA: {report.current_git_sha}")
+    if report.current_promoted_at is not None:
+        lines.append(
+            f"- Promoted at: {report.current_promoted_at.isoformat().replace('+00:00', 'Z')}"
+        )
+    if report.current_promoted_by is not None:
+        lines.append(f"- Promoted by: {report.current_promoted_by}")
+    if report.pending_proposals:
+        lines.append(f"- Pending proposals: {', '.join(report.pending_proposals)}")
+    else:
+        lines.append("- Pending proposals: none")
+    if report.remediation is not None:
+        lines.append(f"- Remediation: {report.remediation}")
+    return "\n".join(lines)
+
+
+def _render_baseline_proposal_output(
+    proposal: BaselineProposal,
+    output: BasicOutputFormat,
+) -> str:
+    payload = {
+        "proposal_id": proposal.proposal_id,
+        "environment": proposal.environment,
+        "reason": proposal.reason,
+        "created_by": proposal.created_by,
+        "git_sha": proposal.git_sha,
+        "source_names": list(proposal.source_names),
+        "baseline_path": str(proposal.baseline_path),
+        "created_at": proposal.created_at.isoformat().replace("+00:00", "Z"),
+    }
+    if output == BasicOutputFormat.JSON:
+        return json.dumps(payload, indent=2, sort_keys=True) + "\n"
+
+    lines = [f"Created baseline proposal {proposal.proposal_id}"]
+    lines.append(f"- Environment: {proposal.environment}")
+    lines.append(f"- Reason: {proposal.reason}")
+    if proposal.created_by is not None:
+        lines.append(f"- Created by: {proposal.created_by}")
+    if proposal.git_sha is not None:
+        lines.append(f"- Git SHA: {proposal.git_sha}")
+    lines.append(f"- Baseline path: {proposal.baseline_path}")
+    if proposal.source_names:
+        lines.append(f"- Sources: {', '.join(proposal.source_names)}")
+    else:
+        lines.append("- Sources: all")
+    return "\n".join(lines)
+
+
+def _render_baseline_promote_output(
+    proposal_id: str,
+    baseline_path: Path,
+    output: BasicOutputFormat,
+) -> str:
+    payload = {
+        "proposal_id": proposal_id,
+        "baseline_path": str(baseline_path),
+    }
+    if output == BasicOutputFormat.JSON:
+        return json.dumps(payload, indent=2, sort_keys=True) + "\n"
+
+    return "\n".join(
+        (
+            f"Promoted baseline proposal {proposal_id}",
+            f"- Baseline path: {baseline_path}",
+        )
+    )
+
+
+def _render_explain_output(payload: dict[str, Any], output: BasicOutputFormat) -> str:
+    if output == BasicOutputFormat.JSON:
         return json.dumps(payload, indent=2, sort_keys=True) + "\n"
 
     lines = [payload["source_name"]]
@@ -894,7 +1339,7 @@ def _format_explain_warehouse(warehouse: dict[str, Any]) -> str:
     return str(kind)
 
 
-def _render_cost_output(report: CostReport, output: OutputFormat) -> str:
+def _render_cost_output(report: CostReport, output: BasicOutputFormat) -> str:
     if report.mode == "history":
         payload = {
             "command": report.command,
@@ -925,7 +1370,7 @@ def _render_cost_output(report: CostReport, output: OutputFormat) -> str:
                 for record in report.usage_records
             ],
         }
-        if output == OutputFormat.JSON:
+        if output == BasicOutputFormat.JSON:
             return json.dumps(payload, indent=2, sort_keys=True) + "\n"
 
         lines = [f"Cost {report.command}", "Mode: recent Snowflake usage"]
@@ -976,7 +1421,7 @@ def _render_cost_output(report: CostReport, output: OutputFormat) -> str:
             for source_name, bytes_processed in sorted(report.estimates.items())
         ],
     }
-    if output == OutputFormat.JSON:
+    if output == BasicOutputFormat.JSON:
         return json.dumps(payload, indent=2, sort_keys=True) + "\n"
 
     lines = [f"Cost {report.command}"]
@@ -995,8 +1440,16 @@ def _render_cost_output(report: CostReport, output: OutputFormat) -> str:
     return "\n".join(lines)
 
 
-def _exit_with_error(message: str, output: OutputFormat = OutputFormat.TEXT) -> None:
-    if output == OutputFormat.JSON:
+def _exit_with_error(
+    message: str,
+    output: BasicOutputFormat | FindingOutputFormat = BasicOutputFormat.TEXT,
+) -> None:
+    if output in {
+        BasicOutputFormat.JSON,
+        FindingOutputFormat.JSON,
+        FindingOutputFormat.POLICY_V1,
+        FindingOutputFormat.GITHUB_ANNOTATIONS,
+    }:
         typer.echo(render_error_json(message, RUNTIME_ERROR), err=True)
     else:
         typer.secho(f"Error: {message}", err=True, fg=typer.colors.RED)

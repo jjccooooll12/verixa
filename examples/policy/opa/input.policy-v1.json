@@ -1,0 +1,71 @@
+{
+  "schema_version": "verixa.policy.v1",
+  "run": {
+    "command": "check",
+    "title": "Check",
+    "sources_checked": 1,
+    "used_baseline": true,
+    "estimated_bytes_processed": 2048,
+    "environment": "prod"
+  },
+  "summary": {
+    "errors": 1,
+    "warnings": 1,
+    "findings": 2,
+    "new_findings": 1,
+    "recurring_findings": 1,
+    "resolved_findings": 0,
+    "suppressed_findings": 0,
+    "warning_policy_failures": 0,
+    "warning_policy_sources": []
+  },
+  "findings": [
+    {
+      "schema_version": "verixa.finding.v2",
+      "fingerprint": "1111111111111111111111111111111111111111111111111111111111111111",
+      "source_name": "stripe.transactions",
+      "severity": "error",
+      "code": "no_nulls_violation",
+      "stable_code": "contract.no_nulls_violation",
+      "message": "no_nulls violated on amount",
+      "category": "contract",
+      "change_type": "contract_violation",
+      "baseline_status": "available",
+      "confidence": "high",
+      "lifecycle_status": "new",
+      "remediation": "Fix the upstream data or relax the contract if the change is expected.",
+      "column": "amount",
+      "risks": [
+        "likely dashboard undercount"
+      ],
+      "owners": [
+        "finance",
+        "data-platform"
+      ],
+      "source_criticality": "high",
+      "estimated_bytes_processed": 2048
+    },
+    {
+      "schema_version": "verixa.finding.v2",
+      "fingerprint": "2222222222222222222222222222222222222222222222222222222222222222",
+      "source_name": "baseline",
+      "severity": "warning",
+      "code": "baseline_stale",
+      "stable_code": "baseline.stale",
+      "message": "baseline snapshot is 9d old; refresh it with 'verixa snapshot'",
+      "category": "baseline",
+      "change_type": "baseline_stale",
+      "baseline_status": "stale",
+      "confidence": "medium",
+      "lifecycle_status": "recurring",
+      "remediation": "Refresh and promote the baseline for this environment.",
+      "column": null,
+      "risks": [],
+      "owners": [],
+      "source_criticality": null,
+      "estimated_bytes_processed": null
+    }
+  ],
+  "resolved_findings": [],
+  "suppressed_findings": []
+}

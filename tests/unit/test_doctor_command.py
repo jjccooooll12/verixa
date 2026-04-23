@@ -44,9 +44,7 @@ class _FakeBigQueryConnector:
         return True, source.table
 
 
-def test_run_doctor_reports_invalid_environment_scoped_baseline_path(
-    tmp_path: Path,
-) -> None:
+def test_run_doctor_reports_invalid_environment_scoped_baseline_path(tmp_path: Path) -> None:
     config_path = tmp_path / "verixa.yaml"
     config_path.write_text(
         """
@@ -70,6 +68,32 @@ sources:
     assert result.error_count == 1
     assert result.findings[0].code == "baseline_path_invalid"
     assert "requires an environment" in result.findings[0].message
+
+
+def test_run_doctor_reports_missing_environment_baseline(tmp_path: Path) -> None:
+    config_path = tmp_path / "verixa.yaml"
+    config_path.write_text(
+        """
+warehouse:
+  kind: bigquery
+  project: demo
+baseline:
+  path: .verixa/{environment}/baseline.json
+sources:
+  stripe.transactions:
+    table: raw.stripe_transactions
+    schema:
+      amount: float
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = run_doctor(config_path, environment="prod", connector_factory=lambda *args, **kwargs: _FakeBigQueryConnector())
+
+    assert result.error_count == 1
+    assert result.findings[0].code == "baseline_missing_for_environment"
+    assert "environment 'prod'" in result.findings[0].message
 
 
 def test_run_doctor_reports_snowflake_runtime_mismatches(tmp_path: Path) -> None:

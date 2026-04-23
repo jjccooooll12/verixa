@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any
 
 from verixa.diff.models import DiffResult
+from verixa.findings.schema import normalize_diff_result
+from verixa.history.classifier import LifecycleReport, classify_finding_lifecycle
 from verixa.snapshot.models import ProjectSnapshot
 
 
@@ -58,9 +60,13 @@ def render_diff_result_json(
     result: DiffResult,
     title: str,
     estimated_bytes_by_source: dict[str, int] | None = None,
+    lifecycle_report: LifecycleReport | None = None,
+    environment: str | None = None,
 ) -> str:
     """Render a machine-readable diff result."""
 
+    normalized = normalize_diff_result(result, estimated_bytes_by_source=estimated_bytes_by_source)
+    lifecycle = lifecycle_report or classify_finding_lifecycle(normalized, ())
     payload: dict[str, Any] = {
         "title": title,
         "summary": {
@@ -69,6 +75,14 @@ def render_diff_result_json(
             "findings": len(result.findings),
             "has_errors": result.error_count > 0,
             "has_warnings": result.warning_count > 0,
+            "new_findings": sum(
+                1 for finding in lifecycle.active_findings if finding.lifecycle_status == "new"
+            ),
+            "recurring_findings": sum(
+                1 for finding in lifecycle.active_findings if finding.lifecycle_status == "recurring"
+            ),
+            "resolved_findings": len(lifecycle.resolved_findings),
+            "suppressed_findings": len(lifecycle.suppressed_findings),
             "warning_policy_failures": result.warning_policy_failure_count,
             "warning_policy_sources": list(result.warning_policy_sources),
             "sources_checked": result.sources_checked,
@@ -77,20 +91,12 @@ def render_diff_result_json(
             if estimated_bytes_by_source is None
             else sum(estimated_bytes_by_source.values()),
         },
+        "environment": environment,
         "findings": [
-            {
-                "source_name": finding.source_name,
-                "severity": finding.severity,
-                "code": finding.code,
-                "message": finding.message,
-                "column": finding.column,
-                "risks": list(finding.risks),
-                "estimated_bytes_processed": None
-                if estimated_bytes_by_source is None
-                else estimated_bytes_by_source.get(finding.source_name),
-            }
-            for finding in result.findings
+            finding.as_dict() for finding in lifecycle.active_findings
         ],
+        "resolved_findings": [finding.as_dict() for finding in lifecycle.resolved_findings],
+        "suppressed_findings": [finding.as_dict() for finding in lifecycle.suppressed_findings],
     }
     return _dumps(payload)
 

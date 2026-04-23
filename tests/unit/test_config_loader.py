@@ -219,6 +219,34 @@ sources:
     assert config.warehouse.max_bytes_billed == 500 * 1024 * 1024
 
 
+def test_load_config_parses_source_severity_overrides(tmp_path: Path) -> None:
+    config_path = tmp_path / "verixa.yaml"
+    config_path.write_text(
+        """
+warehouse:
+  kind: bigquery
+  project: demo-project
+sources:
+  stripe.transactions:
+    table: raw.stripe_transactions
+    severity_overrides:
+      drift.row_count_changed: error
+      baseline.missing_for_source: info
+    schema:
+      amount: float
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.sources["stripe.transactions"].severity_overrides == {
+        "baseline.missing_for_source": "info",
+        "drift.row_count_changed": "error",
+    }
+
+
 def test_load_config_rejects_invalid_warehouse_max_bytes_billed(tmp_path: Path) -> None:
     config_path = tmp_path / "verixa.yaml"
     config_path.write_text(

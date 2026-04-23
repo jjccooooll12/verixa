@@ -18,7 +18,9 @@ def test_init_command_creates_starter_files(tmp_path: Path) -> None:
         assert (cwd / "verixa.yaml").exists()
         assert (cwd / "verixa.risk.yaml.example").exists()
         assert (cwd / "verixa.targets.yaml.example").exists()
+        assert (cwd / "verixa.suppressions.yaml.example").exists()
         assert (cwd / ".verixa").is_dir()
+        assert (cwd / ".verixa" / "baselines" / "proposals").is_dir()
 
 
 def test_init_command_can_write_snowflake_starter_config(tmp_path: Path) -> None:

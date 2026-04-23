@@ -5,6 +5,7 @@ from __future__ import annotations
 from verixa.contracts.models import BaselineConfig, ProjectConfig
 from verixa.diff.models import DiffResult, Finding
 from verixa.diff.risk import RiskConfig, SourceRiskHints
+from verixa.findings.schema import stable_code_for_internal
 from verixa.rules.accepted_values import check_accepted_values
 from verixa.rules.freshness import check_freshness
 from verixa.rules.no_nulls import check_no_nulls
@@ -32,10 +33,10 @@ def build_test_result(
         findings.extend(check_accepted_values(contract, current))
     return _finalize(
         findings,
-        len(config.sources),
+        config=config,
+        sources_checked=len(config.sources),
         used_baseline=False,
         risk_config=risk_config,
-        warning_policy_sources=_warning_policy_sources(config, findings),
     )
 
 
@@ -100,27 +101,34 @@ def build_plan_result(
 
     return _finalize(
         findings,
-        len(config.sources),
+        config=config,
+        sources_checked=len(config.sources),
         used_baseline=True,
         risk_config=risk_config,
-        warning_policy_sources=_warning_policy_sources(config, findings),
     )
 
 
 def _finalize(
     findings: list[Finding],
+    *,
+    config: ProjectConfig,
     sources_checked: int,
     used_baseline: bool,
     risk_config: RiskConfig | None,
-    warning_policy_sources: tuple[str, ...] = (),
 ) -> DiffResult:
-    enriched = [_attach_risks(finding, risk_config) for finding in findings]
+    enriched = [
+        _apply_severity_override(
+            _attach_risks(finding, risk_config),
+            config,
+        )
+        for finding in findings
+    ]
     ordered = tuple(sorted(enriched, key=_finding_sort_key))
     return DiffResult(
         findings=ordered,
         sources_checked=sources_checked,
         used_baseline=used_baseline,
-        warning_policy_sources=warning_policy_sources,
+        warning_policy_sources=_warning_policy_sources(config, list(ordered)),
     )
 
 
@@ -143,6 +151,32 @@ def _attach_risks(finding: Finding, risk_config: RiskConfig | None) -> Finding:
         message=finding.message,
         column=finding.column,
         risks=unique_risks,
+        owners=hints.owners,
+        source_criticality=hints.criticality,
+    )
+
+
+def _apply_severity_override(
+    finding: Finding,
+    config: ProjectConfig,
+) -> Finding:
+    contract = config.sources.get(finding.source_name)
+    if contract is None:
+        return finding
+
+    override = contract.severity_overrides.get(stable_code_for_internal(finding.code))
+    if override is None:
+        return finding
+
+    return Finding(
+        source_name=finding.source_name,
+        severity=override,
+        code=finding.code,
+        message=finding.message,
+        column=finding.column,
+        risks=finding.risks,
+        owners=finding.owners,
+        source_criticality=finding.source_criticality,
     )
 
 

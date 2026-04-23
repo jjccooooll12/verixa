@@ -18,6 +18,8 @@ class Finding:
     message: str
     column: str | None = None
     risks: tuple[str, ...] = ()
+    owners: tuple[str, ...] = ()
+    source_criticality: Literal["low", "medium", "high"] | None = None
 
 
 @dataclass(frozen=True, slots=True)

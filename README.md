@@ -27,6 +27,8 @@ Implemented now:
 - lightweight numeric distribution summaries for declared numeric columns
 - low-noise numeric p50/p95 drift detection from stored baselines
 - text and JSON output
+- GitHub-friendly markdown and annotation output for PR workflows
+- stable `policy-v1` output for external policy engines such as OPA
 - source scoping with `--source`
 - changed-file source targeting with `verixa.targets.yaml`, `--changed-file`, and `--changed-against`
 - optional dbt-manifest lineage for changed-file source targeting
@@ -34,6 +36,10 @@ Implemented now:
 - Snowflake query-history usage reporting with `verixa cost --history-window`
 - max-bytes-billed enforcement for live BigQuery queries
 - status and diagnostic commands
+- explicit baseline proposal, promotion, and acceptance workflow
+- lifecycle tracking for new, recurring, resolved, and suppressed findings
+- standalone suppressions with owner, reason, expiry, and expired-rule diagnostics
+- per-source severity overrides keyed by stable finding code
 - CI-friendly exit codes
 
 Current local suite status:
@@ -114,6 +120,7 @@ This creates:
 - `verixa.yaml`
 - `verixa.risk.yaml.example`
 - `verixa.targets.yaml.example`
+- `verixa.suppressions.yaml.example`
 - `.verixa/`
 
 
@@ -186,6 +193,7 @@ Notes:
 - Snowflake tables can be declared as `database.schema.table`, `schema.table` when `warehouse.database` is set, or `table` when both `warehouse.database` and `warehouse.schema` are set.
 - top-level `rules` is optional.
 - per-source `rules` overrides only the thresholds specified for that source.
+- `severity_overrides` is optional per source. Use stable dotted finding codes such as `drift.row_count_changed`.
 - numeric distribution drift currently uses stored `p50` and `p95` summaries for declared numeric columns.
 - `numeric_distribution_change.minimum_baseline_value` suppresses noise on near-zero baselines.
 - `check.fail_on_warning` is optional at project or source scope.
@@ -333,8 +341,12 @@ Behavior:
 - refreshes numeric summaries for declared numeric columns alongside the rest of the snapshot state
 - surfaces numeric drift findings from stored `p50` and `p95` summaries
 - supports `--format json`
+- supports `--format github-markdown`
+- supports `--format github-annotations`
+- supports `--format policy-v1`
 - supports `--estimate-bytes`
 - supports `--max-bytes-billed` on BigQuery
+- applies matching suppressions from `verixa.suppressions.yaml` before output and CI failure handling
 
 ### `verixa validate`
 Runs contract checks against current live data without comparing to the baseline.
@@ -346,8 +358,12 @@ Behavior:
 - explicit `--source` takes precedence over changed-file targeting
 - unmatched changed files fall back to all configured sources
 - supports `--format json`
+- supports `--format github-markdown`
+- supports `--format github-annotations`
+- supports `--format policy-v1`
 - supports `--estimate-bytes`
 - supports `--max-bytes-billed` on BigQuery
+- applies matching suppressions from `verixa.suppressions.yaml`
 
 ### `verixa check`
 Runs the CI-friendly validation path.
@@ -364,6 +380,7 @@ Behavior:
 - supports `--fail-on-error`
 - supports `--fail-on-warning`
 - honors `sources.<name>.check.fail_on_warning: true`
+- applies matching suppressions from `verixa.suppressions.yaml` before evaluating CI failure conditions
 
 Exit codes:
 - `0`: success or warnings only
@@ -376,6 +393,7 @@ Shows:
 - baseline path found or missing
 - active baseline environment
 - baseline age
+- stale baseline remediation when applicable
 - warehouse auth status
 - configured `max_bytes_billed`
 - configured sources
@@ -390,6 +408,7 @@ Runs diagnostics for:
 - config validity
 - baseline readability
 - baseline path resolution
+- expired suppressions
 - warehouse auth
 - per-source metadata access
 - for Snowflake: active warehouse usability plus role, database, and schema mismatches
@@ -477,8 +496,16 @@ verixa check --changed-against origin/main --fail-on-error
 verixa cost diff --changed-against origin/main
 ```
 
-## JSON Output
-All runtime commands except `init` support `--format json`.
+## Output Formats
+Diff-like commands support:
+- `--format json`
+- `--format github-markdown`
+- `--format github-annotations`
+- `--format policy-v1`
+
+`snapshot`, `status`, `cost`, `explain`, and `baseline ...` support `--format json`.
+
+### JSON Output
 
 Examples:
 
@@ -489,6 +516,40 @@ verixa diff --format json
 ```bash
 verixa check --fail-on-error --format json
 ```
+
+### Suppressions
+Suppressions live outside the main config in `verixa.suppressions.yaml`.
+
+Example:
+
+```yaml
+suppressions:
+  - fingerprint: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    owner: data-platform
+    reason: temporary upstream rollout
+    expires_at: 2026-05-15T00:00:00Z
+    environments: [staging]
+```
+
+Behavior:
+- suppressions apply after drift and contract checks, before output rendering and CI failure handling
+- suppressions do not modify baselines
+- expired suppressions are ignored by `diff` and `check`
+- expired suppressions are surfaced by `verixa doctor`
+
+### Policy Engines
+Verixa can act as the data-aware signal generator for external policy engines.
+
+Generate the stable policy document:
+
+```bash
+verixa check --format policy-v1 > verixa-policy.json
+```
+
+See:
+- `examples/policy/opa/README.md`
+- `examples/policy/opa/verixa_policy.rego`
+- `examples/policy/opa/input.policy-v1.json`
 
 Example JSON shape for `check`:
 

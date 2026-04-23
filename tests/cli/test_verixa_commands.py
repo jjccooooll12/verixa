@@ -97,6 +97,10 @@ def test_status_command_renders_text() -> None:
             baseline_path=config.parent / ".verixa" / "baseline.json",
             baseline_exists=True,
             baseline_age_seconds=3600,
+            baseline_stale=False,
+            baseline_warning_age_seconds=7 * 24 * 3600,
+            baseline_state="ok",
+            baseline_remediation=None,
             baseline_error=None,
             auth_ok=True,
             auth_message="authenticated",
@@ -247,6 +251,81 @@ def test_cost_command_renders_json() -> None:
     assert '"total_bytes_processed": 2048' in result.stdout
     assert '"max_bytes_billed": 1024' in result.stdout
     assert '"has_over_limit_sources": true' in result.stdout
+
+
+def test_diff_command_renders_policy_v1() -> None:
+    runner = CliRunner()
+    app = build_app(
+        run_diff=lambda config, risk_path=None, source_names=(), environment=None, max_bytes_billed=None: DiffResult(
+            findings=(
+                Finding(
+                    source_name="stripe.transactions",
+                    severity="error",
+                    code="no_nulls_violation",
+                    message="no_nulls violated on amount",
+                    column="amount",
+                ),
+            ),
+            sources_checked=1,
+            used_baseline=True,
+        )
+    )
+
+    result = runner.invoke(app, ["diff", "--format", "policy-v1"])
+
+    assert result.exit_code == 0
+    assert '"schema_version": "verixa.policy.v1"' in result.stdout
+    assert '"schema_version": "verixa.finding.v2"' in result.stdout
+
+
+def test_diff_command_renders_github_markdown() -> None:
+    runner = CliRunner()
+    app = build_app(
+        run_diff=lambda config, risk_path=None, source_names=(), environment=None, max_bytes_billed=None: DiffResult(
+            findings=(
+                Finding(
+                    source_name="stripe.transactions",
+                    severity="error",
+                    code="accepted_values_violation",
+                    message="accepted values violated on currency",
+                    column="currency",
+                ),
+            ),
+            sources_checked=1,
+            used_baseline=True,
+        )
+    )
+
+    result = runner.invoke(app, ["diff", "--format", "github-markdown"])
+
+    assert result.exit_code == 0
+    assert "# Verixa Diff" in result.stdout
+    assert "`contract.accepted_values_violation` `currency`" in result.stdout
+
+
+def test_diff_command_renders_github_annotations() -> None:
+    runner = CliRunner()
+    app = build_app(
+        run_diff=lambda config, risk_path=None, source_names=(), environment=None, max_bytes_billed=None: DiffResult(
+            findings=(
+                Finding(
+                    source_name="stripe.transactions",
+                    severity="error",
+                    code="accepted_values_violation",
+                    message="accepted values violated on currency",
+                    column="currency",
+                ),
+            ),
+            sources_checked=1,
+            used_baseline=True,
+        )
+    )
+
+    result = runner.invoke(app, ["diff", "--format", "github-annotations"])
+
+    assert result.exit_code == 0
+    assert '"annotation_level": "failure"' in result.stdout
+    assert '"title": "Verixa Diff: contract.accepted_values_violation"' in result.stdout
 
 
 def test_cost_command_passes_history_window() -> None:

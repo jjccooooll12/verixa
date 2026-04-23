@@ -20,6 +20,7 @@ from verixa.contracts.models import (
     RowCountChangeThresholds,
     RulesConfig,
     ScanConfig,
+    SeverityLevel,
     SourceContract,
     TestDefinition,
     WarehouseConfig,
@@ -229,6 +230,10 @@ def _parse_sources(
             prefix=f"source '{source_name}' check",
             defaults=default_check,
         )
+        severity_overrides = _parse_severity_overrides(
+            raw_source.get("severity_overrides"),
+            prefix=f"source '{source_name}' severity_overrides",
+        )
 
         parsed_sources[source_name] = SourceContract(
             name=source_name,
@@ -239,6 +244,7 @@ def _parse_sources(
             tests=tests,
             check=check,
             rules=rules,
+            severity_overrides=severity_overrides,
         )
     return parsed_sources
 
@@ -396,6 +402,28 @@ def _parse_rules(
         row_count_change=row_count,
         numeric_distribution_change=numeric_distribution,
     )
+
+
+def _parse_severity_overrides(
+    raw_overrides: Any,
+    *,
+    prefix: str,
+) -> dict[str, SeverityLevel]:
+    if raw_overrides is None:
+        return {}
+    if not isinstance(raw_overrides, dict):
+        raise NormalizationError(f"{prefix} must be a mapping when provided.")
+
+    parsed: dict[str, SeverityLevel] = {}
+    for finding_code, severity in sorted(raw_overrides.items()):
+        if not isinstance(finding_code, str) or not finding_code.strip():
+            raise NormalizationError(f"{prefix} keys must be non-empty strings.")
+        if severity not in {"error", "warning", "info"}:
+            raise NormalizationError(
+                f"{prefix}.{finding_code} must be one of: error, warning, info."
+            )
+        parsed[finding_code.strip()] = severity
+    return parsed
 
 
 def _parse_freshness(

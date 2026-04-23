@@ -7,6 +7,8 @@ venv/
 build/
 dist/
 .coverage
+.verixa/history/
+.verixa/baselines/
 
 # Local secrets and credentials
 .secrets/

@@ -20,7 +20,8 @@ Verixa is not:
 
 ## Current Scope
 Implemented now:
-- BigQuery-only v1
+- BigQuery support for the full core workflow
+- Snowflake support for `init`, `snapshot`, `diff`, `validate`, `check`, `status`, `doctor`, and `explain`
 - local deterministic baseline snapshots
 - contract checks and baseline drift heuristics
 - lightweight numeric distribution summaries for declared numeric columns
@@ -29,13 +30,14 @@ Implemented now:
 - source scoping with `--source`
 - changed-file source targeting with `verixa.targets.yaml`, `--changed-file`, and `--changed-against`
 - optional dbt-manifest lineage for changed-file source targeting
-- byte estimation with `verixa cost` and `--estimate-bytes`
+- BigQuery byte estimation with `verixa cost` and `--estimate-bytes`
+- Snowflake query-history usage reporting with `verixa cost --history-window`
 - max-bytes-billed enforcement for live BigQuery queries
 - status and diagnostic commands
 - CI-friendly exit codes
 
 Current local suite status:
-- `96 passed, 1 skipped`
+- `128 passed, 2 skipped`
 
 ## Install
 
@@ -56,6 +58,21 @@ Supported auth paths:
 - Application Default Credentials
 - `GOOGLE_APPLICATION_CREDENTIALS` pointing at a service account key
 - workload identity supported by the BigQuery client
+
+The CLI does not manage auth for you.
+
+For repeatable local testing, the repository also includes:
+- `scripts/setup_mock_snowflake.py`
+- `tests/integration/test_live_snowflake_smoke.py`
+
+## Snowflake Authentication
+Verixa uses the official Snowflake Python connector.
+
+Supported auth paths:
+- named Snowflake connections via `warehouse.connection_name`
+- direct account/user configuration with `warehouse.account` and `warehouse.user`
+- optional password lookup via `warehouse.password_env`
+- optional `authenticator`, `warehouse_name`, `database`, `schema`, and `role`
 
 The CLI does not manage auth for you.
 
@@ -85,6 +102,12 @@ Compatibility aliases for v0.x:
 ### 1. Initialize
 ```bash
 verixa init
+```
+
+Or start with the Snowflake starter template:
+
+```bash
+verixa init --warehouse snowflake
 ```
 
 This creates:
@@ -159,6 +182,8 @@ Notes:
 - `scan` is optional. Use it to bound expensive stats queries to a recent time window.
 - `scan.timestamp_column` supports `timestamp`, `datetime`, and `date` columns.
 - `warehouse.max_bytes_billed` is optional. Use it to cap live BigQuery stats queries.
+- Snowflake configs support either `warehouse.connection_name` or explicit `account` + `user`.
+- Snowflake tables can be declared as `database.schema.table`, `schema.table` when `warehouse.database` is set, or `table` when both `warehouse.database` and `warehouse.schema` are set.
 - top-level `rules` is optional.
 - per-source `rules` overrides only the thresholds specified for that source.
 - numeric distribution drift currently uses stored `p50` and `p95` summaries for declared numeric columns.
@@ -166,6 +191,20 @@ Notes:
 - `check.fail_on_warning` is optional at project or source scope.
 - `baseline.warning_age` is optional. Set it to `null` to disable stale-baseline warnings.
 - test columns must be declared in `schema`.
+
+Example Snowflake warehouse block:
+
+```yaml
+warehouse:
+  kind: snowflake
+  account: xy12345.us-east-1
+  user: analyst
+  password_env: VERIXA_SNOWFLAKE_PASSWORD
+  warehouse_name: ANALYTICS
+  database: RAW
+  schema: INGEST
+  role: TRANSFORMER
+```
 
 ### 3. Validate contracts against live data
 ```bash
@@ -254,8 +293,12 @@ verixa check --fail-on-error
 ### `verixa init`
 Creates starter files and the local state directory.
 
+Options:
+- `--warehouse bigquery`
+- `--warehouse snowflake`
+
 ### `verixa snapshot`
-Queries BigQuery and writes the baseline snapshot.
+Queries the configured warehouse and writes the baseline snapshot.
 
 Behavior:
 - targeted runs with `--source` merge into the existing baseline instead of dropping unrelated sources
@@ -266,7 +309,8 @@ Behavior:
 - captures lightweight numeric summaries for declared numeric columns
 - `--format json` is supported
 - `--estimate-bytes` can attach dry-run estimates for the snapshot query shape
-- `--max-bytes-billed` can cap live query cost for the run
+- `--max-bytes-billed` can cap live query cost for the run on BigQuery
+- Snowflake sessions are tagged with command-specific `QUERY_TAG` values such as `verixa:snapshot` and `verixa:diff`
 
 ### `verixa diff`
 Requires an existing baseline snapshot and shows likely breakages before deploy, including:
@@ -290,7 +334,7 @@ Behavior:
 - surfaces numeric drift findings from stored `p50` and `p95` summaries
 - supports `--format json`
 - supports `--estimate-bytes`
-- supports `--max-bytes-billed`
+- supports `--max-bytes-billed` on BigQuery
 
 ### `verixa validate`
 Runs contract checks against current live data without comparing to the baseline.
@@ -303,7 +347,7 @@ Behavior:
 - unmatched changed files fall back to all configured sources
 - supports `--format json`
 - supports `--estimate-bytes`
-- supports `--max-bytes-billed`
+- supports `--max-bytes-billed` on BigQuery
 
 ### `verixa check`
 Runs the CI-friendly validation path.
@@ -316,7 +360,7 @@ Behavior:
 - unmatched changed files fall back to all configured sources
 - supports `--format json`
 - supports `--estimate-bytes`
-- supports `--max-bytes-billed`
+- supports `--max-bytes-billed` on BigQuery
 - supports `--fail-on-error`
 - supports `--fail-on-warning`
 - honors `sources.<name>.check.fail_on_warning: true`
@@ -348,6 +392,7 @@ Runs diagnostics for:
 - baseline path resolution
 - warehouse auth
 - per-source metadata access
+- for Snowflake: active warehouse usability plus role, database, and schema mismatches
 
 Example:
 ```bash
@@ -371,7 +416,7 @@ verixa explain stripe.transactions --format json
 ```
 
 ### `verixa cost`
-Estimates BigQuery bytes processed for a workflow step.
+Reports workflow cost information for a workflow step.
 
 Examples:
 ```bash
@@ -379,6 +424,7 @@ verixa cost diff
 verixa cost validate --source stripe.transactions
 verixa cost diff --changed-against origin/main
 verixa cost diff --max-bytes-billed 500MB
+verixa cost diff --history-window 30m
 verixa cost check --format json
 ```
 
@@ -391,6 +437,11 @@ Supported steps:
 Legacy aliases are also accepted:
 - `plan`
 - `test`
+
+Behavior:
+- on BigQuery, returns dry-run byte estimates by source
+- on Snowflake, returns recent query-history usage for the command-specific `QUERY_TAG`
+- `--history-window` controls the Snowflake lookback window and defaults to `1h`
 
 ## Changed-File Targeting
 Verixa can auto-select sources from repo changes when `verixa.targets.yaml` is present.
@@ -491,13 +542,17 @@ Risk:
 Verixa is intentionally cost-conscious.
 
 Current behavior:
-- schema and basic table metadata come from low-cost BigQuery metadata APIs where possible
+- BigQuery schema and basic table metadata come from low-cost metadata APIs where possible
+- Snowflake schema and table metadata come from `INFORMATION_SCHEMA`
 - `validate` narrows live queries to contract-relevant columns instead of always scanning full declared schema
 - accepted-values samples are deterministic for CI diffability
 - source capture runs in conservative parallelism to reduce wall-clock time on multi-source runs
 - scan windows can bound expensive stats queries to recent `TIMESTAMP`, `DATETIME`, or `DATE` slices
 - `verixa cost` and `--estimate-bytes` use BigQuery dry runs to estimate query cost
 - `warehouse.max_bytes_billed` and `--max-bytes-billed` can hard-stop live queries that would exceed a configured ceiling
+- Snowflake does not yet expose pre-run byte estimation or max-bytes-billed enforcement through Verixa
+- `verixa cost --history-window` reports recent Snowflake query usage from `INFORMATION_SCHEMA.QUERY_HISTORY`
+- Snowflake sessions are tagged with command-specific `QUERY_TAG` values for query-history traceability
 
 Important tradeoff:
 - when `scan` is configured, row-count and null-rate drift are measured over that lookback window, not the full table
@@ -505,7 +560,7 @@ Important tradeoff:
 ## CI Example
 A minimal CI flow is:
 1. install the package
-2. authenticate to Google Cloud
+2. authenticate to the configured warehouse
 3. restore or check out the baseline snapshot
 4. run `verixa check --fail-on-error --format json`
 5. upload the JSON report if needed
@@ -514,25 +569,47 @@ Example workflow:
 - `.github/workflows/verixa-check.yml`
 
 ## Live Validation
-The repo includes an opt-in live BigQuery smoke test:
+The repo includes opt-in live smoke tests for both warehouses:
 - `tests/integration/test_live_bigquery_smoke.py`
+- `tests/integration/test_live_snowflake_smoke.py`
 
-Enable it with:
+Enable BigQuery live validation with:
 - `VERIXA_RUN_LIVE_BIGQUERY=1`
 - `VERIXA_LIVE_CONFIG=/path/to/verixa.yaml`
 - working BigQuery credentials
 - `google-cloud-bigquery` installed
 
-This workspace has been validated against a real BigQuery project using a mock dataset loaded into BigQuery for end-to-end `snapshot`, `validate`, `diff`, `cost`, and `check` verification.
+Enable Snowflake live validation with:
+- `VERIXA_RUN_LIVE_SNOWFLAKE=1`
+- `VERIXA_LIVE_SNOWFLAKE_CONFIG=/path/to/verixa.yaml`
+- working Snowflake credentials or a named connection in `~/.snowflake/connections.toml`
+- `snowflake-connector-python` installed
+
+Helper setup scripts:
+- `scripts/setup_mock_bigquery.py`
+- `scripts/setup_mock_snowflake.py`
+
+This workspace has been validated against:
+- a real BigQuery project for end-to-end `snapshot`, `validate`, `diff`, `cost`, and `check`
+- a real Snowflake account for end-to-end `status`, `validate`, `snapshot`, `diff`, `check`, `cost`, and `doctor`
+
+The Snowflake live verification covered:
+- full `database.schema.table` references
+- `schema.table` references with warehouse defaults
+- short table names with warehouse database and schema defaults
+- `DATE` scan windows
+- accepted-values samples in findings
+- environment-specific baseline paths
+- command-specific query-tag history reporting
+- Snowflake-specific `doctor` diagnostics
 
 ## Known Limitations
 Current v1 limitations:
-- BigQuery only
 - no hosted backend
 - no lineage import or graph UI
-- no Snowflake connector yet
+- no Snowflake pre-run byte estimation yet
 - no Databricks connector yet
-- no dbt artifact import yet
+- no full dbt lineage ingestion beyond changed-file targeting
 
 ## Internal Layout Note
 The public CLI and package branding is now Verixa.

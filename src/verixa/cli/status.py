@@ -8,7 +8,7 @@ from pathlib import Path
 
 from verixa.config.errors import ConfigError
 from verixa.config.loader import load_config, resolve_config_path
-from verixa.connectors.bigquery.connector import BigQueryConnector
+from verixa.connectors.factory import create_connector, warehouse_label as format_warehouse_label
 from verixa.storage.filesystem import (
     SnapshotStore,
     StorageError,
@@ -71,12 +71,10 @@ def run_status(
                 store = None
             else:
                 existing_baseline_path = store.existing_baseline_path()
-            warehouse_label = config.warehouse.kind
-            if config.warehouse.project:
-                warehouse_label += f" ({config.warehouse.project})"
+            warehouse_label = format_warehouse_label(config.warehouse)
             warehouse_max_bytes_billed = config.warehouse.max_bytes_billed
             sources = tuple(sorted(config.sources))
-            connector = BigQueryConnector(config.warehouse)
+            connector = create_connector(config.warehouse)
             auth_ok, auth_message = connector.check_auth()
     else:
         warehouse_max_bytes_billed = None

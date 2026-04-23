@@ -25,7 +25,8 @@ This document describes the implemented MVP repository structure and the respons
 |       |-- targeting.py
 |       |-- cli/
 |       |   |-- __init__.py
-|       |   `-- app.py
+|       |   |-- app.py
+|       |   `-- workflow.py
 |       |-- config/
 |       |   |-- __init__.py
 |       |   |-- errors.py
@@ -33,7 +34,13 @@ This document describes the implemented MVP repository structure and the respons
 |       |-- connectors/
 |       |   |-- __init__.py
 |       |   |-- base.py
-|       |   `-- bigquery/
+|       |   |-- factory.py
+|       |   |-- bigquery/
+|       |   |   |-- __init__.py
+|       |   |   |-- connector.py
+|       |   |   |-- queries.py
+|       |   |   `-- types.py
+|       |   `-- snowflake/
 |       |       |-- __init__.py
 |       |       |-- connector.py
 |       |       |-- queries.py
@@ -69,7 +76,8 @@ This document describes the implemented MVP repository structure and the respons
 |           |-- filesystem.py
 |           `-- json_codec.py
 |-- scripts/
-|   `-- setup_mock_bigquery.py
+|   |-- setup_mock_bigquery.py
+|   `-- setup_mock_snowflake.py
 |-- examples/
 |   `-- mock_data/
 |       `-- stripe_transactions.jsonl
@@ -83,13 +91,15 @@ This document describes the implemented MVP repository structure and the respons
     |   |-- test_init_command.py
     |   `-- test_verixa_commands.py
     |-- integration/
-    |   `-- test_live_bigquery_smoke.py
+    |   |-- test_live_bigquery_smoke.py
+    |   `-- test_live_snowflake_smoke.py
     `-- unit/
         |-- __init__.py
         |-- test_accepted_values.py
         |-- test_bigquery_connector.py
         |-- test_bigquery_queries.py
         |-- test_bigquery_types.py
+        |-- test_cost_command.py
         |-- test_config_loader.py
         |-- test_contract_normalize.py
         |-- test_diff_engine.py
@@ -102,6 +112,9 @@ This document describes the implemented MVP repository structure and the respons
         |-- test_snapshot_command.py
         |-- test_snapshot_service.py
         |-- test_snapshot_storage.py
+        |-- test_snowflake_connector.py
+        |-- test_snowflake_queries.py
+        |-- test_snowflake_types.py
         |-- test_targeting.py
         `-- test_support.py
 ```
@@ -146,6 +159,7 @@ Responsibilities:
 - render top-level success and failure behavior
 - support both text and JSON output
 - centralize process exit handling
+- expose starter templates for both BigQuery and Snowflake
 - keep legacy aliases behind the new workflow names
 
 ### `config/`
@@ -185,8 +199,18 @@ Warehouse integration boundary.
 
 Responsibilities:
 - define the connector interface
-- isolate BigQuery-specific code
+- choose the active warehouse connector
+- isolate warehouse-specific code
 - keep warehouse logic out of rules and output modules
+
+### `connectors/factory.py`
+Connector selection and warehouse labels.
+
+Responsibilities:
+- map `warehouse.kind` to the correct connector implementation
+- keep CLI and service layers free from warehouse-specific conditionals
+- pass command-specific Snowflake query tags into runtime connectors
+- render concise warehouse labels for diagnostics
 
 ### `connectors/bigquery/`
 BigQuery-specific implementation.
@@ -200,6 +224,21 @@ Responsibilities:
 - enforce optional max-bytes-billed ceilings on live queries
 - support auth and source-reachability checks for `status` and `doctor`
 - convert BigQuery responses into internal snapshot types
+
+### `connectors/snowflake/`
+Snowflake-specific implementation.
+
+Responsibilities:
+- initialize the official Snowflake Python connector
+- parse Snowflake table references with optional database/schema defaults
+- retrieve schema and table metadata through `INFORMATION_SCHEMA`
+- build aggregate stats queries for null rates, freshness, accepted values, and numeric summaries
+- normalize Snowflake array-style accepted-value samples into Verixa findings
+- tag Snowflake sessions with command-specific `QUERY_TAG` values for query-history traceability
+- report recent workflow usage from `INFORMATION_SCHEMA.QUERY_HISTORY`
+- support auth and source-reachability checks for `status` and `doctor`
+- expose runtime warehouse, role, database, and schema diagnostics for `doctor`
+- convert Snowflake responses into internal snapshot types
 
 ### `snapshot/`
 Snapshot assembly logic.
@@ -239,15 +278,6 @@ Responsibilities:
 - attach optional downstream risk hints
 - enforce stale-baseline warnings and CI warning policies
 
-### `targeting.py`
-Changed-file source targeting.
-
-Responsibilities:
-- load optional path-to-source mappings from `verixa.targets.yaml`
-- resolve changed repo paths into logical sources
-- discover changed files from `git diff <base>...HEAD` for CI workflows
-- fall back safely to all sources when no mapping matches
-
 ### `output/`
 Human-friendly and machine-readable rendering.
 
@@ -262,7 +292,7 @@ Responsibilities:
 Repository helper scripts.
 
 Responsibilities:
-- create or load demo data into BigQuery for live validation
+- create or load demo data into BigQuery and Snowflake for live validation
 
 ### `examples/`
 Example local assets.
@@ -292,6 +322,7 @@ Opt-in live warehouse smoke validation.
 
 Responsibilities:
 - run `snapshot`, `validate`, `diff`, `cost`, and `check` against a real BigQuery config only when explicitly enabled
+- run `status`, `snapshot`, `validate`, `diff`, and `check` against a real Snowflake config only when explicitly enabled
 - stay skipped by default
 - verify JSON output parses successfully in live mode
 
@@ -301,4 +332,4 @@ Responsibilities:
 - Keep CLI modules thin.
 - Prefer adding a small rule module over adding branching complexity to one large file.
 - Do not let output formatting logic leak into domain logic.
-- Do not let BigQuery-specific types leak outside the connector package.
+- Do not let warehouse-specific types leak outside the connector package.

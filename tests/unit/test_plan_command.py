@@ -10,9 +10,10 @@ from verixa.storage.filesystem import SnapshotStore
 
 
 class _FakeConnector:
-    def __init__(self, warehouse, *, max_bytes_billed=None) -> None:  # noqa: ANN001
+    def __init__(self, warehouse, *, max_bytes_billed=None, query_tag=None) -> None:  # noqa: ANN001
         self.warehouse = warehouse
         self.max_bytes_billed = max_bytes_billed
+        self.query_tag = query_tag
 
 
 class _FakeSnapshotService:
@@ -101,3 +102,60 @@ sources:
     assert "column removed: currency" in output
     assert "row count changed: 100 -> 40" in output
     assert created_services[0].mode_seen == "plan"
+
+
+def test_run_plan_passes_diff_query_tag_to_connector(tmp_path: Path) -> None:
+    created_connectors: list[_FakeConnector] = []
+
+    def _connector_factory(warehouse, *, max_bytes_billed=None, query_tag=None):  # noqa: ANN001
+        connector = _FakeConnector(
+            warehouse,
+            max_bytes_billed=max_bytes_billed,
+            query_tag=query_tag,
+        )
+        created_connectors.append(connector)
+        return connector
+
+    config_path = tmp_path / "verixa.yaml"
+    config_path.write_text(
+        """
+warehouse:
+  kind: bigquery
+  project: demo
+sources:
+  stripe.transactions:
+    table: raw.stripe_transactions
+    schema:
+      amount: float
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    store = SnapshotStore(tmp_path / ".verixa")
+    store.write_baseline(
+        ProjectSnapshot(
+            warehouse_kind="bigquery",
+            generated_at=datetime(2026, 4, 22, 11, 0, tzinfo=timezone.utc),
+            sources={
+                "stripe.transactions": SourceSnapshot(
+                    source_name="stripe.transactions",
+                    table="demo.raw.stripe_transactions",
+                    schema={"amount": "FLOAT64"},
+                    row_count=1,
+                    null_rates={"amount": 0.0},
+                    freshness=None,
+                    accepted_values={},
+                    captured_at=datetime(2026, 4, 22, 11, 0, tzinfo=timezone.utc),
+                )
+            },
+        )
+    )
+
+    run_plan(
+        config_path,
+        connector_factory=_connector_factory,
+        snapshot_service_factory=_FakeSnapshotService,
+        snapshot_store_factory=lambda: store,
+    )
+
+    assert created_connectors[0].query_tag == "verixa:diff"

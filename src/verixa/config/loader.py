@@ -92,11 +92,16 @@ def _parse_warehouse(raw_warehouse: Any) -> WarehouseConfig:
         raise NormalizationError("Config must define a 'warehouse' mapping.")
 
     kind = raw_warehouse.get("kind")
-    if kind != "bigquery":
-        raise NormalizationError(
-            "Verixa v1 supports only 'bigquery' warehouse.kind values."
-        )
+    if kind == "bigquery":
+        return _parse_bigquery_warehouse(raw_warehouse)
+    if kind == "snowflake":
+        return _parse_snowflake_warehouse(raw_warehouse)
+    raise NormalizationError(
+        "Verixa currently supports only 'bigquery' and 'snowflake' warehouse.kind values."
+    )
 
+
+def _parse_bigquery_warehouse(raw_warehouse: dict[str, Any]) -> WarehouseConfig:
     project = raw_warehouse.get("project")
     location = raw_warehouse.get("location")
     max_bytes_billed = raw_warehouse.get("max_bytes_billed")
@@ -104,6 +109,63 @@ def _parse_warehouse(raw_warehouse: Any) -> WarehouseConfig:
         raise NormalizationError("warehouse.project must be a string when provided.")
     if location is not None and not isinstance(location, str):
         raise NormalizationError("warehouse.location must be a string when provided.")
+    parsed_max_bytes_billed = _parse_max_bytes_billed(max_bytes_billed)
+
+    return WarehouseConfig(
+        kind="bigquery",
+        project=project,
+        location=location,
+        max_bytes_billed=parsed_max_bytes_billed,
+    )
+
+
+def _parse_snowflake_warehouse(raw_warehouse: dict[str, Any]) -> WarehouseConfig:
+    max_bytes_billed = raw_warehouse.get("max_bytes_billed")
+    if max_bytes_billed is not None:
+        raise NormalizationError(
+            "warehouse.max_bytes_billed is supported only for BigQuery."
+        )
+
+    account = _parse_optional_string(raw_warehouse.get("account"), "warehouse.account")
+    user = _parse_optional_string(raw_warehouse.get("user"), "warehouse.user")
+    password_env = _parse_optional_string(
+        raw_warehouse.get("password_env"), "warehouse.password_env"
+    )
+    warehouse_name = _parse_optional_string(
+        raw_warehouse.get("warehouse_name", raw_warehouse.get("warehouse")),
+        "warehouse.warehouse_name",
+    )
+    database = _parse_optional_string(raw_warehouse.get("database"), "warehouse.database")
+    schema = _parse_optional_string(raw_warehouse.get("schema"), "warehouse.schema")
+    role = _parse_optional_string(raw_warehouse.get("role"), "warehouse.role")
+    authenticator = _parse_optional_string(
+        raw_warehouse.get("authenticator"), "warehouse.authenticator"
+    )
+    connection_name = _parse_optional_string(
+        raw_warehouse.get("connection_name"), "warehouse.connection_name"
+    )
+
+    if connection_name is None and (account is None or user is None):
+        raise NormalizationError(
+            "Snowflake configs must provide either warehouse.connection_name or both "
+            "warehouse.account and warehouse.user."
+        )
+
+    return WarehouseConfig(
+        kind="snowflake",
+        account=account,
+        user=user,
+        password_env=password_env,
+        warehouse_name=warehouse_name,
+        database=database,
+        schema=schema,
+        role=role,
+        authenticator=authenticator,
+        connection_name=connection_name,
+    )
+
+
+def _parse_max_bytes_billed(max_bytes_billed: Any) -> int | None:
     parsed_max_bytes_billed: int | None = None
     if max_bytes_billed is not None:
         if isinstance(max_bytes_billed, int):
@@ -118,13 +180,15 @@ def _parse_warehouse(raw_warehouse: Any) -> WarehouseConfig:
             raise NormalizationError(
                 "warehouse.max_bytes_billed must be a positive integer, a byte-size string, or null."
             )
+    return parsed_max_bytes_billed
 
-    return WarehouseConfig(
-        kind=kind,
-        project=project,
-        location=location,
-        max_bytes_billed=parsed_max_bytes_billed,
-    )
+
+def _parse_optional_string(raw_value: Any, field_name: str) -> str | None:
+    if raw_value is None:
+        return None
+    if not isinstance(raw_value, str) or not raw_value.strip():
+        raise NormalizationError(f"{field_name} must be a non-empty string when provided.")
+    return raw_value.strip()
 
 
 def _parse_sources(

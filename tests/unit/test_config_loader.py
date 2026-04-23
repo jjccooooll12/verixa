@@ -241,6 +241,113 @@ sources:
         load_config(config_path)
 
 
+def test_load_config_parses_snowflake_connection_settings(tmp_path: Path) -> None:
+    config_path = tmp_path / "verixa.yaml"
+    config_path.write_text(
+        """
+warehouse:
+  kind: snowflake
+  account: xy12345.us-east-1
+  user: analyst
+  password_env: VERIXA_SNOWFLAKE_PASSWORD
+  warehouse_name: ANALYTICS
+  database: RAW
+  schema: INGEST
+  role: TRANSFORMER
+  authenticator: externalbrowser
+sources:
+  stripe.transactions:
+    table: ingest.orders
+    schema:
+      amount: float
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.warehouse.kind == "snowflake"
+    assert config.warehouse.account == "xy12345.us-east-1"
+    assert config.warehouse.user == "analyst"
+    assert config.warehouse.password_env == "VERIXA_SNOWFLAKE_PASSWORD"
+    assert config.warehouse.warehouse_name == "ANALYTICS"
+    assert config.warehouse.database == "RAW"
+    assert config.warehouse.schema == "INGEST"
+    assert config.warehouse.role == "TRANSFORMER"
+    assert config.warehouse.authenticator == "externalbrowser"
+
+
+def test_load_config_parses_snowflake_connection_name(tmp_path: Path) -> None:
+    config_path = tmp_path / "verixa.yaml"
+    config_path.write_text(
+        """
+warehouse:
+  kind: snowflake
+  connection_name: team-dev
+sources:
+  stripe.transactions:
+    table: RAW.INGEST.ORDERS
+    schema:
+      amount: float
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.warehouse.kind == "snowflake"
+    assert config.warehouse.connection_name == "team-dev"
+    assert config.warehouse.account is None
+    assert config.warehouse.user is None
+
+
+def test_load_config_rejects_invalid_snowflake_config_without_connection_info(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "verixa.yaml"
+    config_path.write_text(
+        """
+warehouse:
+  kind: snowflake
+  account: xy12345.us-east-1
+sources:
+  stripe.transactions:
+    table: RAW.INGEST.ORDERS
+    schema:
+      amount: float
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="warehouse.connection_name or both"):
+        load_config(config_path)
+
+
+def test_load_config_rejects_max_bytes_billed_for_snowflake(tmp_path: Path) -> None:
+    config_path = tmp_path / "verixa.yaml"
+    config_path.write_text(
+        """
+warehouse:
+  kind: snowflake
+  connection_name: team-dev
+  max_bytes_billed: 1GB
+sources:
+  stripe.transactions:
+    table: RAW.INGEST.ORDERS
+    schema:
+      amount: float
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="supported only for BigQuery"):
+        load_config(config_path)
+
+
 def test_load_config_rejects_empty_baseline_path(tmp_path: Path) -> None:
     config_path = tmp_path / "verixa.yaml"
     config_path.write_text(

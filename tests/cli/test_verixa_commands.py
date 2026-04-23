@@ -179,11 +179,62 @@ def test_explain_command_renders_text() -> None:
     assert "numeric_distribution_change" in result.stdout
 
 
+def test_explain_command_renders_snowflake_warehouse_details() -> None:
+    runner = CliRunner()
+    app = build_app(
+        run_explain=lambda config, source_name: {
+            "source_name": source_name,
+            "table": "RAW.INGEST.ORDERS",
+            "warehouse": {
+                "kind": "snowflake",
+                "project": None,
+                "location": None,
+                "max_bytes_billed": None,
+                "account": "xy12345.us-east-1",
+                "user": "analyst",
+                "warehouse_name": "ANALYTICS",
+                "database": "RAW",
+                "schema": "INGEST",
+                "role": "TRANSFORMER",
+                "authenticator": "externalbrowser",
+                "connection_name": None,
+            },
+            "schema": [{"name": "amount", "type": "FLOAT64"}],
+            "freshness": None,
+            "scan": None,
+            "check": {"fail_on_warning": False},
+            "rules": {
+                "null_rate_change": {"warning_delta": 0.01, "error_delta": 0.05},
+                "row_count_change": {
+                    "warning_drop_ratio": 0.2,
+                    "error_drop_ratio": 0.5,
+                    "warning_growth_ratio": 0.2,
+                    "error_growth_ratio": 1.0,
+                },
+                "numeric_distribution_change": {
+                    "warning_relative_delta": 0.25,
+                    "error_relative_delta": 0.5,
+                    "minimum_baseline_value": 1.0,
+                },
+            },
+            "tests": [],
+        }
+    )
+
+    result = runner.invoke(app, ["explain", "stripe.transactions"])
+
+    assert result.exit_code == 0
+    assert "Warehouse: snowflake" in result.stdout
+    assert "account=xy12345.us-east-1" in result.stdout
+    assert "warehouse_name=ANALYTICS" in result.stdout
+
+
 def test_cost_command_renders_json() -> None:
     runner = CliRunner()
     app = build_app(
-        run_cost=lambda config, command, source_names=(), max_bytes_billed=None: CostReport(
+        run_cost=lambda config, command, source_names=(), max_bytes_billed=None, history_window_seconds=None: CostReport(
             command="diff",
+            mode="estimate",
             estimates={"stripe.transactions": 2048},
             max_bytes_billed=max_bytes_billed,
         )
@@ -196,6 +247,36 @@ def test_cost_command_renders_json() -> None:
     assert '"total_bytes_processed": 2048' in result.stdout
     assert '"max_bytes_billed": 1024' in result.stdout
     assert '"has_over_limit_sources": true' in result.stdout
+
+
+def test_cost_command_passes_history_window() -> None:
+    runner = CliRunner()
+    seen: dict[str, object] = {}
+
+    def _run_cost(  # noqa: ANN001
+        config,
+        command,
+        source_names=(),
+        max_bytes_billed=None,
+        history_window_seconds=None,
+    ):
+        seen["command"] = command
+        seen["history_window_seconds"] = history_window_seconds
+        return CostReport(
+            command="diff",
+            mode="history",
+            usage_records=(),
+            query_tag="verixa:diff",
+            history_window_seconds=history_window_seconds,
+        )
+
+    app = build_app(run_cost=_run_cost)
+    result = runner.invoke(app, ["cost", "diff", "--history-window", "30m"])
+
+    assert result.exit_code == 0
+    assert seen["command"] == "diff"
+    assert seen["history_window_seconds"] == 1800
+    assert "recent Snowflake usage" in result.stdout
 
 
 def test_diff_command_can_target_sources_from_changed_files() -> None:

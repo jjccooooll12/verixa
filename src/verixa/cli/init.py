@@ -6,7 +6,7 @@ from pathlib import Path
 
 from verixa.storage.filesystem import SnapshotStore
 
-DEFAULT_CONFIG = """warehouse:
+DEFAULT_BIGQUERY_CONFIG = """warehouse:
   kind: bigquery
   project: your-gcp-project
   location: US
@@ -56,6 +56,54 @@ sources:
           values: [USD, EUR, GBP]
 """
 
+DEFAULT_SNOWFLAKE_CONFIG = """warehouse:
+  kind: snowflake
+  connection_name: verixa
+
+rules:
+  null_rate_change:
+    warning_delta: 0.02
+    error_delta: 0.05
+  row_count_change:
+    warning_drop_ratio: 0.15
+    error_drop_ratio: 0.40
+    warning_growth_ratio: 0.25
+    error_growth_ratio: 1.50
+  numeric_distribution_change:
+    warning_relative_delta: 0.25
+    error_relative_delta: 0.50
+    minimum_baseline_value: 1.0
+
+baseline:
+  warning_age: 168h
+  path: .verixa/{environment}/baseline.json
+
+sources:
+  stripe.transactions:
+    table: VERIXA_DB.RAW.STRIPE_TRANSACTIONS
+    scan:
+      timestamp_column: created_at
+      lookback: 30d
+    check:
+      fail_on_warning: false
+    rules:
+      row_count_change:
+        warning_drop_ratio: 0.10
+        error_drop_ratio: 0.25
+    freshness:
+      column: created_at
+      max_age: 1h
+    schema:
+      amount: float
+      currency: string
+      created_at: timestamp
+    tests:
+      - no_nulls: amount
+      - accepted_values:
+          column: currency
+          values: [USD, EUR, GBP]
+"""
+
 DEFAULT_RISK_CONFIG = """sources:
   stripe.transactions:
     general:
@@ -78,7 +126,11 @@ dbt:
 """
 
 
-def init_project(force: bool = False) -> list[Path]:
+def init_project(
+    *,
+    force: bool = False,
+    warehouse_kind: str = "bigquery",
+) -> list[Path]:
     """Create starter Verixa config files and the local state directory."""
 
     created_paths: list[Path] = []
@@ -95,8 +147,19 @@ def init_project(force: bool = False) -> list[Path]:
 
     store.ensure_directory()
 
-    config_path.write_text(DEFAULT_CONFIG, encoding="utf-8")
+    config_path.write_text(_starter_config(warehouse_kind), encoding="utf-8")
     risk_path.write_text(DEFAULT_RISK_CONFIG, encoding="utf-8")
     targets_path.write_text(DEFAULT_TARGETS_CONFIG, encoding="utf-8")
     created_paths.extend([config_path, risk_path, targets_path, store.baseline_path.parent])
     return created_paths
+
+
+def _starter_config(warehouse_kind: str) -> str:
+    normalized = warehouse_kind.strip().lower()
+    if normalized == "bigquery":
+        return DEFAULT_BIGQUERY_CONFIG
+    if normalized == "snowflake":
+        return DEFAULT_SNOWFLAKE_CONFIG
+    raise ValueError(
+        f"Unsupported starter warehouse '{warehouse_kind}'. Expected 'bigquery' or 'snowflake'."
+    )

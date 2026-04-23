@@ -100,7 +100,7 @@ class WarehouseConnector(ABC):
         source: SourceContract,
         capture_request: SourceCaptureRequest,
     ) -> int:
-        """Estimate BigQuery bytes processed for one source capture."""
+        """Estimate bytes processed for one source capture when supported."""
 
     @abstractmethod
     def check_auth(self) -> tuple[bool, str]:

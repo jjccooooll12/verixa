@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from verixa.cli.plan import run_plan
+from verixa.cli.workflow import query_tag_for_command
 from verixa.diff.models import DiffResult
 
 
@@ -24,4 +25,5 @@ def run_check(
         source_names=source_names,
         environment=environment,
         max_bytes_billed=max_bytes_billed,
+        query_tag=query_tag_for_command("check"),
     )

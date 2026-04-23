@@ -11,9 +11,10 @@ from tests.unit.test_support import make_numeric_summary_snapshot
 
 
 class _FakeConnector:
-    def __init__(self, warehouse, *, max_bytes_billed=None) -> None:  # noqa: ANN001
+    def __init__(self, warehouse, *, max_bytes_billed=None, query_tag=None) -> None:  # noqa: ANN001
         self.warehouse = warehouse
         self.max_bytes_billed = max_bytes_billed
+        self.query_tag = query_tag
 
 
 class _FakeSnapshotService:
@@ -87,8 +88,12 @@ sources:
 def test_run_snapshot_passes_max_bytes_billed_to_connector(tmp_path: Path) -> None:
     created_connectors: list[_FakeConnector] = []
 
-    def _connector_factory(warehouse, *, max_bytes_billed=None):  # noqa: ANN001
-        connector = _FakeConnector(warehouse, max_bytes_billed=max_bytes_billed)
+    def _connector_factory(warehouse, *, max_bytes_billed=None, query_tag=None):  # noqa: ANN001
+        connector = _FakeConnector(
+            warehouse,
+            max_bytes_billed=max_bytes_billed,
+            query_tag=query_tag,
+        )
         created_connectors.append(connector)
         return connector
 
@@ -117,6 +122,7 @@ sources:
     )
 
     assert created_connectors[0].max_bytes_billed == 1024
+    assert created_connectors[0].query_tag == "verixa:snapshot"
 
 
 def test_run_snapshot_uses_environment_specific_baseline_path(tmp_path: Path) -> None:

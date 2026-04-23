@@ -1,6 +1,6 @@
 # Verixa Implementation Plan
 
-This document is the working implementation checklist for the Verixa MVP. It is intended to be updated as implementation progresses.
+This document is the working implementation checklist for Verixa. It is intended to be updated as implementation progresses.
 
 ## Status Legend
 - `[ ]` not started
@@ -9,7 +9,7 @@ This document is the working implementation checklist for the Verixa MVP. It is 
 - `[!]` blocked or intentionally deferred
 
 ## MVP Goal
-Build a local-first, developer-first Data CI CLI for BigQuery source tables that can:
+Build a local-first, developer-first Data CI CLI for warehouse source tables that can:
 - initialize a project
 - capture a baseline snapshot
 - compare current data state against baseline and declared contracts
@@ -19,7 +19,7 @@ Build a local-first, developer-first Data CI CLI for BigQuery source tables that
 ## Scope Guardrails
 - [x] Keep the product focused on pre-deploy source-data safety.
 - [x] Avoid building dashboards, hosted services, or lineage UI in v1.
-- [x] Avoid warehouse-specific abstractions that are unnecessary for BigQuery v1.
+- [x] Avoid warehouse-specific abstractions that are unnecessary for the supported warehouses.
 - [x] Keep state local, explicit, and deterministic.
 
 ## Phase 1: Repository and Packaging
@@ -41,7 +41,7 @@ Build a local-first, developer-first Data CI CLI for BigQuery source tables that
 
 ## Phase 3: Config Loading
 - [x] Add YAML config loader.
-- [x] Support a top-level warehouse section for BigQuery settings.
+- [x] Support a top-level warehouse section for warehouse settings.
 - [x] Support optional baseline staleness settings.
 - [x] Support optional project-level and source-level check warning policies.
 - [x] Support source definitions keyed by logical source name.
@@ -59,6 +59,7 @@ Build a local-first, developer-first Data CI CLI for BigQuery source tables that
 
 ## Phase 4: CLI Surface
 - [x] Implement `verixa init`.
+- [x] Support `verixa init --warehouse <kind>` starter templates.
 - [x] Implement `verixa snapshot`.
 - [x] Implement `verixa diff`.
 - [x] Implement `verixa validate`.
@@ -94,6 +95,21 @@ Build a local-first, developer-first Data CI CLI for BigQuery source tables that
 - [x] Add auth and metadata reachability checks for `status` and `doctor`.
 - [x] Handle authentication and permission failures with useful messages.
 - [x] Document BigQuery cost and freshness tradeoffs.
+
+## Phase 5b: Snowflake Connector
+- [x] Extend warehouse config parsing for Snowflake connection settings.
+- [x] Add connector selection so CLI flows do not assume BigQuery.
+- [x] Implement Snowflake table reference parsing with optional database/schema defaults.
+- [x] Implement Snowflake schema retrieval through `INFORMATION_SCHEMA`.
+- [x] Implement Snowflake table metadata retrieval for row counts and reachability checks.
+- [x] Implement Snowflake stats queries for null rates, freshness, accepted values, and numeric summaries.
+- [x] Return accepted-values sample values from Snowflake findings.
+- [x] Tag Snowflake sessions with a stable Verixa query tag.
+- [x] Support Snowflake auth and source-reachability checks for `status` and `doctor`.
+- [x] Report recent Snowflake warehouse usage through `verixa cost`.
+- [x] Add Snowflake-specific warehouse, role, and namespace diagnostics in `verixa doctor`.
+- [x] Add mocked tests for Snowflake config parsing, queries, and connector behavior.
+- [x] Add live Snowflake validation against a real account.
 
 ## Phase 6: Snapshot Service and Storage
 - [x] Implement snapshot capture service.
@@ -171,6 +187,7 @@ Build a local-first, developer-first Data CI CLI for BigQuery source tables that
 - [x] Add tests for JSON output behavior.
 - [x] Add tests for the Verixa command surface and compatibility aliases.
 - [x] Add an opt-in live BigQuery smoke harness gated by environment variables.
+- [x] Add an opt-in live Snowflake smoke harness gated by environment variables.
 - [x] Refactor CLI and runner tests to use explicit dependency injection instead of module-level monkeypatching.
 
 ## Phase 11: Documentation
@@ -178,6 +195,7 @@ Build a local-first, developer-first Data CI CLI for BigQuery source tables that
 - [x] Write README config example.
 - [x] Write README command walkthrough.
 - [x] Document BigQuery auth expectations.
+- [x] Document Snowflake auth expectations.
 - [x] Document snapshot storage behavior.
 - [x] Document CI usage and exit codes.
 - [x] Document known limitations and tradeoffs.
@@ -191,6 +209,7 @@ Build a local-first, developer-first Data CI CLI for BigQuery source tables that
 - [x] Document migration aliases for `plan` and `test`.
 - [x] Document environment-specific baseline paths and `--environment`.
 - [x] Document dbt-manifest-based changed-file targeting.
+- [x] Document Snowflake starter templates and helper setup script.
 
 ## Phase 12: MVP Validation
 - [x] Verify `verixa init` creates the expected files.
@@ -203,6 +222,7 @@ Build a local-first, developer-first Data CI CLI for BigQuery source tables that
 - [x] Verify `verixa doctor` reports config, baseline, auth, and source-access diagnostics.
 - [x] Verify `verixa explain` renders one source contract clearly.
 - [x] Verify `verixa cost` returns byte estimates for supported workflow steps.
+- [x] Verify `verixa cost` reports recent Snowflake query usage for supported workflow steps.
 - [x] Validate output readability with at least one realistic example.
 - [x] Validate JSON output shape for CI consumers.
 - [x] Keep live BigQuery validation opt-in and skipped by default.
@@ -216,7 +236,6 @@ Build a local-first, developer-first Data CI CLI for BigQuery source tables that
 - [x] Promote `check` as the CI hero command.
 
 ## Deferred / Post-MVP
-- [ ] Snowflake connector.
 - [ ] Databricks connector.
 - [x] Automatic lineage import from dbt artifacts for changed-file source targeting.
 - [ ] Hosted backend or shared team state.
@@ -224,6 +243,7 @@ Build a local-first, developer-first Data CI CLI for BigQuery source tables that
 ## Remaining Gaps
 - [x] Exercise the live smoke harness against a real BigQuery project, not only in skipped mode.
 - [x] Re-run the live smoke path through the new `verixa` entrypoints after the rebrand.
+- [x] Exercise a live Snowflake flow against a real Snowflake account.
 
 ## Decisions Locked In
 - [x] `verixa diff` requires a baseline snapshot and does not silently downgrade to contract-only mode.
@@ -234,7 +254,8 @@ Build a local-first, developer-first Data CI CLI for BigQuery source tables that
 - [x] The public CLI, internal package layout, and repository naming all use Verixa.
 
 ## Current Assumptions
-- [x] BigQuery is the only supported warehouse in v1.
+- [x] BigQuery and Snowflake are the currently supported warehouse connectors.
+- [x] BigQuery supports dry-run cost estimation and max-bytes-billed enforcement; Snowflake supports post-run query-history usage reporting.
 - [x] Baseline snapshots are local files, likely committed or restored in CI.
 - [x] Row-count checks are heuristic when metadata is used and exact when a stats query already runs.
 - [x] Accepted-values checks only evaluate declared columns.

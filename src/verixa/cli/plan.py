@@ -5,9 +5,10 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
+from verixa.cli.workflow import query_tag_for_command
 from verixa.config.loader import load_config
 from verixa.connectors.base import WarehouseConnector
-from verixa.connectors.bigquery.connector import BigQueryConnector
+from verixa.connectors.factory import create_connector
 from verixa.contracts.models import ProjectConfig
 from verixa.diff.engine import build_plan_result
 from verixa.diff.models import DiffResult
@@ -29,9 +30,10 @@ def run_plan(
     source_names: tuple[str, ...] = (),
     environment: str | None = None,
     max_bytes_billed: int | None = None,
+    query_tag: str | None = None,
     config_loader: ConfigLoader = load_config,
     risk_loader: RiskLoader = load_risk_config,
-    connector_factory: ConnectorFactory = BigQueryConnector,
+    connector_factory: ConnectorFactory = create_connector,
     snapshot_service_factory: SnapshotServiceFactory = SnapshotService,
     snapshot_store_factory: SnapshotStoreFactory = SnapshotStore,
 ) -> DiffResult:
@@ -39,7 +41,11 @@ def run_plan(
 
     config = config_loader(config_path, source_names=source_names)
     risk_config = risk_loader(risk_path)
-    connector = connector_factory(config.warehouse, max_bytes_billed=max_bytes_billed)
+    connector = connector_factory(
+        config.warehouse,
+        max_bytes_billed=max_bytes_billed,
+        query_tag=query_tag or query_tag_for_command("diff"),
+    )
     service = snapshot_service_factory(connector)
     if snapshot_store_factory is SnapshotStore:
         store = create_snapshot_store(config.baseline.path, environment=environment)

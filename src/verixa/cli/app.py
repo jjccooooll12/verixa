@@ -21,7 +21,7 @@ from verixa.cli.status import StatusReport, run_status as _run_status_impl
 from verixa.cli.validate import run_validate as _run_validate_impl
 from verixa.config.errors import ConfigError
 from verixa.connectors.base import ConnectorError
-from verixa.contracts.normalize import parse_byte_size
+from verixa.contracts.normalize import parse_byte_size, parse_duration_to_seconds
 from verixa.diff.models import DiffResult
 from verixa.output.console import render_diff_result, render_snapshot_summary
 from verixa.output.exit_codes import FINDINGS_ERROR, RUNTIME_ERROR, SUCCESS
@@ -40,6 +40,13 @@ class OutputFormat(str, Enum):
 
     TEXT = "text"
     JSON = "json"
+
+
+class InitWarehouse(str, Enum):
+    """Starter warehouse templates supported by ``verixa init``."""
+
+    BIGQUERY = "bigquery"
+    SNOWFLAKE = "snowflake"
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,7 +72,12 @@ def _estimate_bytes_impl(
     *,
     command: str,
 ) -> dict[str, int]:
-    return _run_cost_impl(config_path, command=command, source_names=source_names).estimates
+    return _run_cost_impl(
+        config_path,
+        command=command,
+        source_names=source_names,
+        mode="estimate",
+    ).estimates
 
 
 DEFAULT_APP_DEPS = AppDeps(
@@ -92,11 +104,18 @@ def create_app(deps: AppDeps | None = None) -> typer.Typer:
     @app.command("init")
     def init_command(
         force: bool = typer.Option(False, help="Overwrite starter files if they already exist."),
+        warehouse: InitWarehouse = typer.Option(
+            InitWarehouse.BIGQUERY,
+            "--warehouse",
+            help="Starter warehouse template to write into verixa.yaml.",
+        ),
     ) -> None:
         """Initialize a Verixa project."""
 
         try:
-            created = active_deps.init_project(force=force)
+            created = active_deps.init_project(force=force, warehouse_kind=warehouse.value)
+        except ValueError as exc:
+            _exit_with_error(str(exc))
         except FileExistsError as exc:
             _exit_with_error(str(exc))
         typer.echo("Created:")
@@ -559,9 +578,14 @@ def create_app(deps: AppDeps | None = None) -> typer.Typer:
             "--max-bytes-billed",
             help="Compare estimates against a byte ceiling. Accepts values like 500MB or 1GB.",
         ),
+        history_window: str | None = typer.Option(
+            None,
+            "--history-window",
+            help="For Snowflake, report recent warehouse usage within this lookback window, for example 30m or 1h.",
+        ),
         output: OutputFormat = typer.Option(OutputFormat.TEXT, "--format", help="Output format."),
     ) -> None:
-        """Estimate BigQuery bytes processed for one Verixa workflow step."""
+        """Estimate BigQuery bytes or report recent Snowflake usage for one workflow step."""
 
         try:
             selected_sources = _resolve_cli_source_names(
@@ -578,6 +602,7 @@ def create_app(deps: AppDeps | None = None) -> typer.Typer:
                 command=command,
                 source_names=selected_sources,
                 max_bytes_billed=_parse_max_bytes_billed(max_bytes_billed),
+                history_window_seconds=_parse_history_window(history_window),
             )
             typer.echo(_render_cost_output(report, output))
         except (ConfigError, ConnectorError, StorageError, ValueError) as exc:
@@ -783,6 +808,7 @@ def _render_explain_output(payload: dict[str, Any], output: OutputFormat) -> str
 
     lines = [payload["source_name"]]
     lines.append(f"- Table: {payload['table']}")
+    lines.append(f"- Warehouse: {_format_explain_warehouse(payload['warehouse'])}")
     if payload["warehouse"]["max_bytes_billed"] is None:
         lines.append("- Max bytes billed: none")
     else:
@@ -838,9 +864,100 @@ def _render_explain_output(payload: dict[str, Any], output: OutputFormat) -> str
     return "\n".join(lines)
 
 
+def _format_explain_warehouse(warehouse: dict[str, Any]) -> str:
+    kind = warehouse["kind"]
+    if kind == "bigquery":
+        parts = []
+        if warehouse.get("project") is not None:
+            parts.append(f"project={warehouse['project']}")
+        if warehouse.get("location") is not None:
+            parts.append(f"location={warehouse['location']}")
+        return f"bigquery ({', '.join(parts)})" if parts else "bigquery"
+
+    if kind == "snowflake":
+        parts = []
+        for key in (
+            "connection_name",
+            "account",
+            "user",
+            "warehouse_name",
+            "database",
+            "schema",
+            "role",
+            "authenticator",
+        ):
+            value = warehouse.get(key)
+            if value is not None:
+                parts.append(f"{key}={value}")
+        return f"snowflake ({', '.join(parts)})" if parts else "snowflake"
+
+    return str(kind)
+
+
 def _render_cost_output(report: CostReport, output: OutputFormat) -> str:
+    if report.mode == "history":
+        payload = {
+            "command": report.command,
+            "mode": report.mode,
+            "query_tag": report.query_tag,
+            "history_window_seconds": report.history_window_seconds,
+            "summary": {
+                "queries_found": len(report.usage_records),
+                "total_bytes_scanned": report.total_bytes,
+                "total_bytes_written": report.total_bytes_written,
+                "total_elapsed_ms": report.total_elapsed_ms,
+            },
+            "queries": [
+                {
+                    "query_id": record.query_id,
+                    "query_tag": record.query_tag,
+                    "warehouse_name": record.warehouse_name,
+                    "start_time": (
+                        record.start_time.isoformat().replace("+00:00", "Z")
+                        if record.start_time is not None
+                        else None
+                    ),
+                    "total_elapsed_ms": record.total_elapsed_ms,
+                    "bytes_scanned": record.bytes_scanned,
+                    "bytes_written": record.bytes_written,
+                    "rows_produced": record.rows_produced,
+                }
+                for record in report.usage_records
+            ],
+        }
+        if output == OutputFormat.JSON:
+            return json.dumps(payload, indent=2, sort_keys=True) + "\n"
+
+        lines = [f"Cost {report.command}", "Mode: recent Snowflake usage"]
+        if report.query_tag is not None:
+            lines.append(f"Query tag: {report.query_tag}")
+        if report.history_window_seconds is not None:
+            lines.append(f"Window: {_format_age(report.history_window_seconds)}")
+        if not report.usage_records:
+            lines.append("Queries: none found")
+            return "\n".join(lines)
+        for record in report.usage_records:
+            details = [
+                f"query_id={record.query_id}",
+                f"scanned={_format_bytes(record.bytes_scanned or 0)}",
+            ]
+            if record.warehouse_name is not None:
+                details.append(f"warehouse={record.warehouse_name}")
+            if record.total_elapsed_ms is not None:
+                details.append(f"elapsed={record.total_elapsed_ms}ms")
+            if record.start_time is not None:
+                details.append(
+                    f"started={record.start_time.isoformat().replace('+00:00', 'Z')}"
+                )
+            lines.append(f"- {' '.join(details)}")
+        lines.append(f"Total scanned: {_format_bytes(report.total_bytes)}")
+        lines.append(f"Total written: {_format_bytes(report.total_bytes_written)}")
+        lines.append(f"Total elapsed: {report.total_elapsed_ms}ms")
+        return "\n".join(lines)
+
     payload = {
         "command": report.command,
+        "mode": report.mode,
         "summary": {
             "sources_estimated": len(report.estimates),
             "total_bytes_processed": report.total_bytes,
@@ -893,6 +1010,15 @@ def _parse_max_bytes_billed(value: str | None) -> int | None:
         return parse_byte_size(value)
     except ValueError as exc:
         raise ValueError(f"Invalid --max-bytes-billed value '{value}': {exc}") from exc
+
+
+def _parse_history_window(value: str | None) -> int | None:
+    if value is None:
+        return None
+    try:
+        return parse_duration_to_seconds(value)
+    except ValueError as exc:
+        raise ValueError(f"Invalid --history-window value '{value}': {exc}") from exc
 
 
 def _format_age(seconds: int) -> str:

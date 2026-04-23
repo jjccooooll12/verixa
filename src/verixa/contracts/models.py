@@ -16,6 +16,15 @@ class WarehouseConfig:
     project: str | None = None
     location: str | None = None
     max_bytes_billed: int | None = None
+    account: str | None = None
+    user: str | None = None
+    password_env: str | None = None
+    warehouse_name: str | None = None
+    database: str | None = None
+    schema: str | None = None
+    role: str | None = None
+    authenticator: str | None = None
+    connection_name: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

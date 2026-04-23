@@ -33,7 +33,7 @@ sources:
         encoding="utf-8",
     )
 
-    with patch("verixa.cli.status.BigQueryConnector", _FakeConnector):
+    with patch("verixa.cli.status.create_connector", lambda warehouse: _FakeConnector(warehouse)):
         report = run_status(config_path)
 
     assert report.environment is None

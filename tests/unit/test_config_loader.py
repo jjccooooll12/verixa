@@ -196,6 +196,42 @@ sources:
     assert source.scan.lookback_seconds == 14 * 24 * 3600
 
 
+def test_load_config_parses_history_settings(tmp_path: Path) -> None:
+    config_path = tmp_path / "verixa.yaml"
+    config_path.write_text(
+        """
+warehouse:
+  kind: bigquery
+  project: demo-project
+sources:
+  stripe.transactions:
+    table: raw.stripe_transactions
+    history:
+      window: 7
+      minimum_snapshots: 4
+      row_count: true
+      null_rate: false
+      numeric_distribution: true
+      backfill_mode: true
+    schema:
+      amount: float
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+    history = config.sources["stripe.transactions"].history
+
+    assert history is not None
+    assert history.window == 7
+    assert history.minimum_snapshots == 4
+    assert history.row_count is True
+    assert history.null_rate is False
+    assert history.numeric_distribution is True
+    assert history.backfill_mode is True
+
+
 def test_load_config_parses_warehouse_max_bytes_billed(tmp_path: Path) -> None:
     config_path = tmp_path / "verixa.yaml"
     config_path.write_text(
@@ -407,11 +443,13 @@ warehouse:
   project: demo-project
 check:
   fail_on_warning: false
+  advisory: false
 sources:
   stripe.transactions:
     table: raw.stripe_transactions
     check:
       fail_on_warning: true
+      advisory: true
     schema:
       amount: float
 """.strip()
@@ -422,7 +460,9 @@ sources:
     config = load_config(config_path)
 
     assert config.check.fail_on_warning is False
+    assert config.check.advisory is False
     assert config.sources["stripe.transactions"].check.fail_on_warning is True
+    assert config.sources["stripe.transactions"].check.advisory is True
 
 
 def test_load_config_accepts_date_scan_columns(tmp_path: Path) -> None:

@@ -93,6 +93,18 @@ class NumericDistributionChangeThresholds:
 
 
 @dataclass(frozen=True, slots=True)
+class HistoryDriftConfig:
+    """Optional history-aware drift settings for noisy sources."""
+
+    window: int = 5
+    minimum_snapshots: int = 3
+    row_count: bool = True
+    null_rate: bool = True
+    numeric_distribution: bool = True
+    backfill_mode: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class RulesConfig:
     """Project-level heuristic thresholds."""
 
@@ -121,6 +133,7 @@ class CheckConfig:
     """Check-specific CI policy settings."""
 
     fail_on_warning: bool = False
+    advisory: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,6 +146,7 @@ class SourceContract:
     freshness: FreshnessConfig | None
     tests: tuple[TestDefinition, ...]
     scan: ScanConfig | None = None
+    history: HistoryDriftConfig | None = None
     check: CheckConfig = field(default_factory=CheckConfig)
     rules: RulesConfig = field(default_factory=RulesConfig)
     severity_overrides: dict[str, SeverityLevel] = field(default_factory=dict)

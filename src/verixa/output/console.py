@@ -77,6 +77,13 @@ def render_diff_result(
             "Warning policy: warnings fail CI for "
             f"{', '.join(result.warning_policy_sources)}"
         )
+    if result.advisory_mode_enabled:
+        lines.append("Advisory mode: project-level advisory is enabled; findings will not fail check")
+    elif result.advisory_sources:
+        lines.append(
+            "Advisory sources: findings from these sources do not fail check: "
+            f"{', '.join(result.advisory_sources)}"
+        )
     if estimated_bytes_by_source is not None:
         lines.append(f"Estimated scan: {_format_total_bytes(estimated_bytes_by_source)}")
     return "\n".join(lines).strip()
@@ -111,12 +118,26 @@ def _render_grouped_findings(
                     lines.append(
                         f"{indent}      status={finding.lifecycle_status} confidence={finding.confidence}"
                     )
+                    if finding.confidence_reason is not None:
+                        lines.append(f"{indent}      confidence_note={finding.confidence_reason}")
+                    if finding.history_metric is not None:
+                        lines.append(
+                            f"{indent}      history={finding.history_metric} "
+                            f"median={_format_optional_number(finding.history_center_value)} "
+                            f"expected={_format_optional_number(finding.history_lower_bound)}-"
+                            f"{_format_optional_number(finding.history_upper_bound)} "
+                            f"sample_size={finding.history_sample_size}"
+                        )
                     if finding.source_criticality is not None:
                         lines.append(
                             f"{indent}      criticality={finding.source_criticality}"
                         )
                     if finding.owners:
                         lines.append(f"{indent}      owners={','.join(finding.owners)}")
+                    if finding.downstream_models:
+                        lines.append(
+                            f"{indent}      downstream={','.join(finding.downstream_models)}"
+                        )
                     lines.append(f"{indent}      next={finding.remediation}")
                     for risk in finding.risks:
                         lines.append(f"{indent}      risk={risk}")
@@ -134,9 +155,10 @@ def _change_type_sort_key(change_type: str) -> tuple[int, str]:
     order = {
         "contract_violation": 0,
         "baseline_drift": 1,
-        "baseline_missing": 2,
-        "baseline_stale": 3,
-        "runtime_error": 4,
+        "historical_drift": 2,
+        "baseline_missing": 3,
+        "baseline_stale": 4,
+        "runtime_error": 5,
     }
     return order.get(change_type, 99), change_type
 
@@ -156,3 +178,10 @@ def _format_bytes(value: int) -> str:
             return f"{size:.1f} {unit}"
         size /= 1024
     return f"{int(value)} B"
+
+
+def _format_optional_number(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    formatted = f"{value:.4f}"
+    return formatted.rstrip("0").rstrip(".")

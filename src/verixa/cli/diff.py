@@ -14,8 +14,10 @@ def run_diff(
     risk_path: Path | None = None,
     *,
     source_names: tuple[str, ...] = (),
+    targets_path: Path | None = None,
     environment: str | None = None,
     max_bytes_billed: int | None = None,
+    execution_mode: str = "bounded",
 ) -> DiffResult:
     """Compare current data state with the stored baseline and declared contracts."""
 
@@ -23,7 +25,10 @@ def run_diff(
         config_path=config_path,
         risk_path=risk_path,
         source_names=source_names,
+        targets_path=targets_path,
         environment=environment,
         max_bytes_billed=max_bytes_billed,
+        execution_mode=execution_mode,
         query_tag=query_tag_for_command("diff"),
+        history_command="diff",
     )

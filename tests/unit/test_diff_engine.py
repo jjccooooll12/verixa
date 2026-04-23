@@ -5,14 +5,17 @@ from datetime import datetime, timezone
 from verixa.contracts.models import (
     BaselineConfig,
     CheckConfig,
+    HistoryDriftConfig,
     ProjectConfig,
     RowCountChangeThresholds,
     RulesConfig,
+    ScanConfig,
     SourceContract,
     WarehouseConfig,
 )
 from verixa.diff.engine import build_plan_result
 from verixa.diff.risk import RiskConfig, SourceRiskHints
+from verixa.findings.schema import normalize_diff_result
 from verixa.snapshot.models import ProjectSnapshot
 from tests.unit.test_support import make_numeric_summary_snapshot, make_source_snapshot
 
@@ -58,6 +61,7 @@ def test_build_plan_result_attaches_risks_and_baseline_findings() -> None:
                 columns={"currency": ("likely to break finance models",)},
                 owners=("finance", "data-platform"),
                 criticality="high",
+                downstream_models=("stg_orders", "fct_orders"),
             )
         }
     )
@@ -75,6 +79,7 @@ def test_build_plan_result_attaches_risks_and_baseline_findings() -> None:
     )
     assert schema_finding.owners == ("finance", "data-platform")
     assert schema_finding.source_criticality == "high"
+    assert schema_finding.downstream_models == ("stg_orders", "fct_orders")
 
 
 def test_build_plan_result_uses_source_level_rule_overrides() -> None:
@@ -255,3 +260,160 @@ def test_build_plan_result_includes_numeric_distribution_findings() -> None:
     )
     assert finding.severity == "error"
     assert "p95 changed on amount" in finding.message
+
+
+def test_build_plan_result_marks_bounded_scan_findings_with_confidence_note() -> None:
+    contract = SourceContract(
+        name="stripe.transactions",
+        table="raw.stripe_transactions",
+        schema={"amount": "FLOAT64", "created_at": "TIMESTAMP"},
+        freshness=None,
+        tests=(),
+        scan=ScanConfig(
+            timestamp_column="created_at",
+            column_type="TIMESTAMP",
+            lookback="30d",
+            lookback_seconds=30 * 24 * 3600,
+        ),
+    )
+    config = ProjectConfig(
+        warehouse=WarehouseConfig(kind="bigquery", project="demo"),
+        sources={"stripe.transactions": contract},
+    )
+    baseline = ProjectSnapshot(
+        warehouse_kind="bigquery",
+        generated_at=datetime(2026, 4, 22, 11, 0, tzinfo=timezone.utc),
+        sources={"stripe.transactions": make_source_snapshot(row_count=100)},
+    )
+    current = ProjectSnapshot(
+        warehouse_kind="bigquery",
+        generated_at=datetime(2026, 4, 22, 12, 0, tzinfo=timezone.utc),
+        sources={"stripe.transactions": make_source_snapshot(row_count=79)},
+    )
+
+    result = build_plan_result(config, baseline, current, execution_mode="bounded")
+    normalized = normalize_diff_result(result)
+
+    finding = next(item for item in normalized if item.code == "row_count_changed")
+    assert finding.confidence == "low"
+    assert finding.confidence_reason == "bounded mode evaluated a bounded window of 30d on created_at"
+
+
+def test_build_plan_result_marks_cheap_row_count_from_metadata() -> None:
+    contract = SourceContract(
+        name="stripe.transactions",
+        table="raw.stripe_transactions",
+        schema={"amount": "FLOAT64"},
+        freshness=None,
+        tests=(),
+    )
+    config = ProjectConfig(
+        warehouse=WarehouseConfig(kind="bigquery", project="demo"),
+        sources={"stripe.transactions": contract},
+    )
+    baseline = ProjectSnapshot(
+        warehouse_kind="bigquery",
+        generated_at=datetime(2026, 4, 22, 11, 0, tzinfo=timezone.utc),
+        sources={"stripe.transactions": make_source_snapshot(row_count=100)},
+    )
+    current = ProjectSnapshot(
+        warehouse_kind="bigquery",
+        generated_at=datetime(2026, 4, 22, 12, 0, tzinfo=timezone.utc),
+        sources={"stripe.transactions": make_source_snapshot(row_count=79)},
+    )
+
+    result = build_plan_result(config, baseline, current, execution_mode="cheap")
+    normalized = normalize_diff_result(result)
+
+    finding = next(item for item in normalized if item.code == "row_count_changed")
+    assert finding.confidence == "low"
+    assert finding.confidence_reason == "cheap mode relies on warehouse metadata row counts instead of exact counts"
+
+
+def test_build_plan_result_uses_history_band_for_row_count_when_enabled() -> None:
+    contract = SourceContract(
+        name="stripe.transactions",
+        table="raw.stripe_transactions",
+        schema={"amount": "FLOAT64"},
+        freshness=None,
+        tests=(),
+        history=HistoryDriftConfig(window=5, minimum_snapshots=3),
+    )
+    config = ProjectConfig(
+        warehouse=WarehouseConfig(kind="bigquery", project="demo"),
+        sources={"stripe.transactions": contract},
+    )
+    baseline = ProjectSnapshot(
+        warehouse_kind="bigquery",
+        generated_at=datetime(2026, 4, 22, 11, 0, tzinfo=timezone.utc),
+        sources={"stripe.transactions": make_source_snapshot(row_count=100)},
+    )
+    current = ProjectSnapshot(
+        warehouse_kind="bigquery",
+        generated_at=datetime(2026, 4, 22, 12, 0, tzinfo=timezone.utc),
+        sources={"stripe.transactions": make_source_snapshot(row_count=140)},
+    )
+    history = (
+        ProjectSnapshot(
+            warehouse_kind="bigquery",
+            generated_at=datetime(2026, 4, 19, 12, 0, tzinfo=timezone.utc),
+            sources={"stripe.transactions": make_source_snapshot(row_count=100)},
+        ),
+        ProjectSnapshot(
+            warehouse_kind="bigquery",
+            generated_at=datetime(2026, 4, 20, 12, 0, tzinfo=timezone.utc),
+            sources={"stripe.transactions": make_source_snapshot(row_count=102)},
+        ),
+        ProjectSnapshot(
+            warehouse_kind="bigquery",
+            generated_at=datetime(2026, 4, 21, 12, 0, tzinfo=timezone.utc),
+            sources={"stripe.transactions": make_source_snapshot(row_count=98)},
+        ),
+    )
+
+    result = build_plan_result(
+        config,
+        baseline,
+        current,
+        historical_snapshots=history,
+    )
+
+    assert any(finding.code == "row_count_history_band" for finding in result.findings)
+    assert not any(finding.code == "row_count_changed" for finding in result.findings)
+    normalized = normalize_diff_result(result)
+    finding = next(item for item in normalized if item.code == "row_count_history_band")
+    assert finding.change_type == "historical_drift"
+    assert finding.history_metric == "row_count"
+    assert finding.history_sample_size == 3
+
+
+def test_build_plan_result_skips_row_count_drift_in_backfill_mode() -> None:
+    contract = SourceContract(
+        name="stripe.transactions",
+        table="raw.stripe_transactions",
+        schema={"amount": "FLOAT64"},
+        freshness=None,
+        tests=(),
+        history=HistoryDriftConfig(backfill_mode=True),
+    )
+    config = ProjectConfig(
+        warehouse=WarehouseConfig(kind="bigquery", project="demo"),
+        sources={"stripe.transactions": contract},
+    )
+    baseline = ProjectSnapshot(
+        warehouse_kind="bigquery",
+        generated_at=datetime(2026, 4, 22, 11, 0, tzinfo=timezone.utc),
+        sources={"stripe.transactions": make_source_snapshot(row_count=100)},
+    )
+    current = ProjectSnapshot(
+        warehouse_kind="bigquery",
+        generated_at=datetime(2026, 4, 22, 12, 0, tzinfo=timezone.utc),
+        sources={"stripe.transactions": make_source_snapshot(row_count=300)},
+    )
+
+    result = build_plan_result(config, baseline, current)
+
+    assert not any(
+        finding.code in {"row_count_changed", "row_count_history_band"}
+        for finding in result.findings
+    )

@@ -9,6 +9,8 @@ from typing import Any
 import yaml
 
 from verixa.config.errors import ConfigError
+from verixa.contracts.models import ProjectConfig
+from verixa.targeting import load_dbt_downstream_models, load_dbt_source_metadata
 
 
 @dataclass(frozen=True, slots=True)
@@ -19,6 +21,7 @@ class SourceRiskHints:
     columns: dict[str, tuple[str, ...]]
     owners: tuple[str, ...] = ()
     criticality: str | None = None
+    downstream_models: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +60,11 @@ def load_risk_config(path: Path | None = None) -> RiskConfig | None:
         general = _parse_risk_list(raw_source.get("general", []), source_name)
         owners = _parse_optional_string_list(raw_source.get("owners", []), source_name, "owners")
         criticality = _parse_optional_criticality(raw_source.get("criticality"), source_name)
+        downstream_models = _parse_optional_string_list(
+            raw_source.get("downstream_models", []),
+            source_name,
+            "downstream_models",
+        )
         raw_columns = raw_source.get("columns", {})
         if not isinstance(raw_columns, dict):
             raise ConfigError(
@@ -71,6 +79,7 @@ def load_risk_config(path: Path | None = None) -> RiskConfig | None:
             columns=columns,
             owners=owners,
             criticality=criticality,
+            downstream_models=downstream_models,
         )
 
     return RiskConfig(sources=sources)
@@ -82,6 +91,56 @@ def resolve_risk_path(path: Path | None = None) -> Path:
     if path is not None:
         return path
     return DEFAULT_RISK_PATH
+
+
+def enrich_risk_config_with_dbt_impacts(
+    risk_config: RiskConfig | None,
+    *,
+    config: ProjectConfig,
+    targets_path: Path | None,
+) -> RiskConfig | None:
+    """Merge dbt-derived metadata into risk hints without overriding explicit config."""
+
+    downstream_models = load_dbt_downstream_models(config, targets_path=targets_path)
+    source_metadata = load_dbt_source_metadata(config, targets_path=targets_path)
+    if not downstream_models and not source_metadata:
+        return risk_config
+
+    merged_sources: dict[str, SourceRiskHints] = {}
+    existing_sources = {} if risk_config is None else risk_config.sources
+    for source_name in sorted(set(existing_sources) | set(downstream_models) | set(source_metadata)):
+        existing = existing_sources.get(source_name)
+        derived_models = downstream_models.get(source_name, ())
+        derived_metadata = source_metadata.get(source_name)
+        if existing is None:
+            merged_sources[source_name] = SourceRiskHints(
+                general=(),
+                columns={},
+                owners=() if derived_metadata is None else derived_metadata.owners,
+                criticality=None if derived_metadata is None else derived_metadata.criticality,
+                downstream_models=derived_models,
+            )
+            continue
+        merged_sources[source_name] = SourceRiskHints(
+            general=existing.general,
+            columns=existing.columns,
+            owners=tuple(
+                dict.fromkeys(
+                    (
+                        *existing.owners,
+                        *( () if derived_metadata is None else derived_metadata.owners ),
+                    )
+                )
+            ),
+            criticality=existing.criticality
+            if existing.criticality is not None
+            else None if derived_metadata is None else derived_metadata.criticality,
+            downstream_models=tuple(
+                dict.fromkeys((*existing.downstream_models, *derived_models))
+            ),
+        )
+
+    return RiskConfig(sources=merged_sources)
 
 
 def _parse_risk_list(

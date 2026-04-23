@@ -21,6 +21,7 @@ class _FakeSnapshotService:
     def __init__(self, connector) -> None:  # noqa: ANN001
         self.connector = connector
         self.mode_seen = None
+        self.execution_mode_seen = None
 
     def capture(self, config, *, mode="snapshot") -> ProjectSnapshot:  # noqa: ANN001
         self.mode_seen = mode
@@ -43,6 +44,16 @@ class _FakeSnapshotService:
                 )
             },
         )
+
+    def capture_with_execution_mode(  # noqa: ANN001
+        self,
+        config,
+        *,
+        mode="snapshot",
+        execution_mode="bounded",
+    ) -> ProjectSnapshot:
+        self.execution_mode_seen = execution_mode
+        return self.capture(config, mode=mode)
 
 
 def test_run_snapshot_writes_baseline_file(tmp_path: Path) -> None:
@@ -83,6 +94,7 @@ sources:
     assert baseline_path == tmp_path / ".verixa" / "baseline.json"
     assert baseline_path.exists()
     assert created_services[0].mode_seen == "snapshot"
+    assert created_services[0].execution_mode_seen == "bounded"
 
 
 def test_run_snapshot_passes_max_bytes_billed_to_connector(tmp_path: Path) -> None:
@@ -123,6 +135,41 @@ sources:
 
     assert created_connectors[0].max_bytes_billed == 1024
     assert created_connectors[0].query_tag == "verixa:snapshot"
+
+
+def test_run_snapshot_passes_execution_mode_to_service(tmp_path: Path) -> None:
+    created_services: list[_FakeSnapshotService] = []
+
+    def _service_factory(connector):  # noqa: ANN001
+        service = _FakeSnapshotService(connector)
+        created_services.append(service)
+        return service
+
+    config_path = tmp_path / "verixa.yaml"
+    config_path.write_text(
+        """
+warehouse:
+  kind: bigquery
+  project: demo
+sources:
+  stripe.transactions:
+    table: raw.stripe_transactions
+    schema:
+      amount: float
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    run_snapshot(
+        config_path,
+        execution_mode="cheap",
+        connector_factory=_FakeConnector,
+        snapshot_service_factory=_service_factory,
+        snapshot_store_factory=lambda: SnapshotStore(tmp_path / ".verixa"),
+    )
+
+    assert created_services[0].execution_mode_seen == "cheap"
 
 
 def test_run_snapshot_uses_environment_specific_baseline_path(tmp_path: Path) -> None:

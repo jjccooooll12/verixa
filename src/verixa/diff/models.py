@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 Severity = Literal["error", "warning", "info"]
+Confidence = Literal["high", "medium", "low"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,6 +21,15 @@ class Finding:
     risks: tuple[str, ...] = ()
     owners: tuple[str, ...] = ()
     source_criticality: Literal["low", "medium", "high"] | None = None
+    downstream_models: tuple[str, ...] = ()
+    confidence_override: Confidence | None = None
+    confidence_reason: str | None = None
+    history_metric: str | None = None
+    history_window: int | None = None
+    history_sample_size: int | None = None
+    history_center_value: float | None = None
+    history_lower_bound: float | None = None
+    history_upper_bound: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +40,9 @@ class DiffResult:
     sources_checked: int
     used_baseline: bool
     warning_policy_sources: tuple[str, ...] = ()
+    advisory_mode_enabled: bool = False
+    advisory_sources: tuple[str, ...] = ()
+    execution_mode: Literal["cheap", "bounded", "full"] = "bounded"
 
     @property
     def error_count(self) -> int:

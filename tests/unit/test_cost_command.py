@@ -13,10 +13,21 @@ class _FakeSnapshotService:
     def __init__(self, connector) -> None:  # noqa: ANN001
         self.connector = connector
         self.mode_seen = None
+        self.execution_mode_seen = None
 
     def estimate_bytes(self, config, *, mode="snapshot") -> dict[str, int]:  # noqa: ANN001
         self.mode_seen = mode
         return {"stripe.transactions": 2048}
+
+    def estimate_bytes_with_execution_mode(  # noqa: ANN001
+        self,
+        config,
+        *,
+        mode="snapshot",
+        execution_mode="bounded",
+    ) -> dict[str, int]:
+        self.execution_mode_seen = execution_mode
+        return self.estimate_bytes(config, mode=mode)
 
 
 class _FakeBigQueryConnector:
@@ -99,7 +110,43 @@ sources:
         query_tag="verixa:diff",
     )
     assert created_services[0].mode_seen == "plan"
+    assert created_services[0].execution_mode_seen == "bounded"
     assert created_connectors[0].query_tag == "verixa:diff"
+
+
+def test_run_cost_passes_execution_mode_to_bigquery_estimate(tmp_path: Path) -> None:
+    config_path = tmp_path / "verixa.yaml"
+    config_path.write_text(
+        """
+warehouse:
+  kind: bigquery
+  project: demo
+sources:
+  stripe.transactions:
+    table: raw.stripe_transactions
+    schema:
+      amount: float
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    created_services: list[_FakeSnapshotService] = []
+
+    def _service_factory(connector):  # noqa: ANN001
+        service = _FakeSnapshotService(connector)
+        created_services.append(service)
+        return service
+
+    run_cost(
+        config_path,
+        command="validate",
+        execution_mode="cheap",
+        connector_factory=lambda warehouse, **kwargs: _FakeBigQueryConnector(warehouse, **kwargs),
+        snapshot_service_factory=_service_factory,
+    )
+
+    assert created_services[0].execution_mode_seen == "cheap"
 
 
 def test_run_cost_reports_recent_snowflake_usage(tmp_path: Path) -> None:

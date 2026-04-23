@@ -19,12 +19,14 @@ def test_render_diff_result_policy_v1_emits_stable_document() -> None:
         ),
         sources_checked=1,
         used_baseline=False,
+        execution_mode="cheap",
     )
 
     payload = json.loads(render_diff_result_policy_v1(result, "Validate"))
 
     assert payload["schema_version"] == "verixa.policy.v1"
     assert payload["run"]["command"] == "validate"
+    assert payload["run"]["execution_mode"] == "cheap"
     assert payload["summary"]["errors"] == 1
     assert payload["summary"]["new_findings"] == 1
     assert payload["summary"]["resolved_findings"] == 0

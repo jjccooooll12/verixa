@@ -36,8 +36,16 @@ sources:
     scan:
       timestamp_column: created_at
       lookback: 30d
+    history:
+      window: 5
+      minimum_snapshots: 3
+      row_count: true
+      null_rate: true
+      numeric_distribution: true
+      backfill_mode: false
     check:
       fail_on_warning: false
+      advisory: false
     rules:
       row_count_change:
         warning_drop_ratio: 0.10
@@ -84,8 +92,16 @@ sources:
     scan:
       timestamp_column: created_at
       lookback: 30d
+    history:
+      window: 5
+      minimum_snapshots: 3
+      row_count: true
+      null_rate: true
+      numeric_distribution: true
+      backfill_mode: false
     check:
       fail_on_warning: false
+      advisory: false
     rules:
       row_count_change:
         warning_drop_ratio: 0.10

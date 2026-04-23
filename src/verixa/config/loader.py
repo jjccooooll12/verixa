@@ -13,6 +13,7 @@ from verixa.contracts.models import (
     BaselineConfig,
     CheckConfig,
     FreshnessConfig,
+    HistoryDriftConfig,
     NumericDistributionChangeThresholds,
     NoNullsTest,
     NullRateChangeThresholds,
@@ -219,6 +220,7 @@ def _parse_sources(
 
         freshness = _parse_freshness(source_name, raw_source.get("freshness"), schema)
         scan = _parse_scan(source_name, raw_source.get("scan"), schema)
+        history = _parse_history(source_name, raw_source.get("history"))
         tests = _parse_tests(source_name, raw_source.get("tests", []), schema)
         rules = _parse_rules(
             raw_source.get("rules"),
@@ -241,6 +243,7 @@ def _parse_sources(
             schema=schema,
             freshness=freshness,
             scan=scan,
+            history=history,
             tests=tests,
             check=check,
             rules=rules,
@@ -285,8 +288,58 @@ def _parse_check(
     fail_on_warning = raw_check.get("fail_on_warning", resolved_defaults.fail_on_warning)
     if not isinstance(fail_on_warning, bool):
         raise NormalizationError(f"{prefix}.fail_on_warning must be true or false.")
+    advisory = raw_check.get("advisory", resolved_defaults.advisory)
+    if not isinstance(advisory, bool):
+        raise NormalizationError(f"{prefix}.advisory must be true or false.")
 
-    return CheckConfig(fail_on_warning=fail_on_warning)
+    return CheckConfig(fail_on_warning=fail_on_warning, advisory=advisory)
+
+
+def _parse_history(
+    source_name: str,
+    raw_history: Any,
+) -> HistoryDriftConfig | None:
+    if raw_history is None:
+        return None
+    if not isinstance(raw_history, dict):
+        raise NormalizationError(f"source '{source_name}' history must be a mapping when provided.")
+
+    window = raw_history.get("window", 5)
+    minimum_snapshots = raw_history.get("minimum_snapshots", 3)
+    row_count = raw_history.get("row_count", True)
+    null_rate = raw_history.get("null_rate", True)
+    numeric_distribution = raw_history.get("numeric_distribution", True)
+    backfill_mode = raw_history.get("backfill_mode", False)
+
+    if not isinstance(window, int) or window <= 0:
+        raise NormalizationError(f"source '{source_name}' history.window must be a positive integer.")
+    if not isinstance(minimum_snapshots, int) or minimum_snapshots < 2:
+        raise NormalizationError(
+            f"source '{source_name}' history.minimum_snapshots must be an integer >= 2."
+        )
+    if minimum_snapshots > window:
+        raise NormalizationError(
+            f"source '{source_name}' history.minimum_snapshots must be less than or equal to history.window."
+        )
+    for field_name, value in (
+        ("row_count", row_count),
+        ("null_rate", null_rate),
+        ("numeric_distribution", numeric_distribution),
+        ("backfill_mode", backfill_mode),
+    ):
+        if not isinstance(value, bool):
+            raise NormalizationError(
+                f"source '{source_name}' history.{field_name} must be true or false."
+            )
+
+    return HistoryDriftConfig(
+        window=window,
+        minimum_snapshots=minimum_snapshots,
+        row_count=row_count,
+        null_rate=null_rate,
+        numeric_distribution=numeric_distribution,
+        backfill_mode=backfill_mode,
+    )
 
 
 def _parse_rules(

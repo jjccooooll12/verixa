@@ -79,6 +79,7 @@ def run_cost(
     source_names: tuple[str, ...] = (),
     max_bytes_billed: int | None = None,
     history_window_seconds: int | None = None,
+    execution_mode: str = "bounded",
     mode: Literal["auto", "estimate", "history"] = "auto",
     config_loader: ConfigLoader = load_config,
     connector_factory: ConnectorFactory = create_connector,
@@ -98,7 +99,12 @@ def run_cost(
         if mode == "history":
             raise ConnectorError("History-based cost reporting is currently supported only for Snowflake.")
         service = snapshot_service_factory(connector)
-        estimates = service.estimate_bytes(config, mode=command_spec.capture_mode)
+        estimates = _estimate_bytes(
+            service,
+            config,
+            mode=command_spec.capture_mode,
+            execution_mode=execution_mode,
+        )
         effective_max_bytes_billed = (
             max_bytes_billed if max_bytes_billed is not None else config.warehouse.max_bytes_billed
         )
@@ -143,3 +149,20 @@ def run_cost(
         query_tag=command_spec.query_tag,
         history_window_seconds=window_seconds,
     )
+
+
+def _estimate_bytes(
+    service: SnapshotService,
+    config: ProjectConfig,
+    *,
+    mode: str,
+    execution_mode: str,
+) -> dict[str, int]:
+    estimate_with_execution_mode = getattr(service, "estimate_bytes_with_execution_mode", None)
+    if callable(estimate_with_execution_mode):
+        return estimate_with_execution_mode(
+            config,
+            mode=mode,
+            execution_mode=execution_mode,
+        )
+    return service.estimate_bytes(config, mode=mode)

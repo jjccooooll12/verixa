@@ -23,6 +23,7 @@ FindingCategory = Literal[
 FindingChangeType = Literal[
     "contract_violation",
     "baseline_drift",
+    "historical_drift",
     "baseline_missing",
     "baseline_stale",
     "runtime_error",
@@ -57,11 +58,19 @@ class NormalizedFinding:
     confidence: Confidence
     lifecycle_status: LifecycleStatus
     remediation: str
+    confidence_reason: str | None = None
     column: str | None = None
     risks: tuple[str, ...] = ()
     owners: tuple[str, ...] = ()
     source_criticality: Literal["low", "medium", "high"] | None = None
+    downstream_models: tuple[str, ...] = ()
     estimated_bytes_processed: int | None = None
+    history_metric: str | None = None
+    history_window: int | None = None
+    history_sample_size: int | None = None
+    history_center_value: float | None = None
+    history_lower_bound: float | None = None
+    history_upper_bound: float | None = None
 
     def as_dict(self) -> dict[str, object]:
         """Convert the normalized finding to a JSON-friendly mapping."""
@@ -95,7 +104,7 @@ def _normalize_finding(
     category = _category_for_code(finding.code)
     change_type = _change_type_for_code(finding.code)
     baseline_status = _baseline_status_for_code(finding.code, used_baseline=used_baseline)
-    confidence = _confidence_for_code(finding.code)
+    confidence = finding.confidence_override or _confidence_for_code(finding.code)
     remediation = _remediation_for_code(finding.code)
     estimated_bytes = None
     if estimated_bytes_by_source is not None:
@@ -113,13 +122,21 @@ def _normalize_finding(
         change_type=change_type,
         baseline_status=baseline_status,
         confidence=confidence,
+        confidence_reason=finding.confidence_reason,
         lifecycle_status="new",
         remediation=remediation,
         column=finding.column,
         risks=finding.risks,
         owners=finding.owners,
         source_criticality=finding.source_criticality,
+        downstream_models=finding.downstream_models,
         estimated_bytes_processed=estimated_bytes,
+        history_metric=finding.history_metric,
+        history_window=finding.history_window,
+        history_sample_size=finding.history_sample_size,
+        history_center_value=finding.history_center_value,
+        history_lower_bound=finding.history_lower_bound,
+        history_upper_bound=finding.history_upper_bound,
     )
 
 
@@ -144,8 +161,14 @@ def _category_for_code(code: str) -> FindingCategory:
         return "freshness"
     if code == "null_rate_changed":
         return "null_rate"
+    if code == "null_rate_history_band":
+        return "null_rate"
     if code == "row_count_changed":
         return "row_count"
+    if code == "row_count_history_band":
+        return "row_count"
+    if code in {"numeric_p50_history_band", "numeric_p95_history_band"}:
+        return "numeric_distribution"
     if code.startswith("numeric_"):
         return "numeric_distribution"
     if code.startswith("baseline_"):
@@ -168,6 +191,13 @@ def _change_type_for_code(code: str) -> FindingChangeType:
         return "contract_violation"
     if code in {"null_rate_changed", "row_count_changed", "numeric_p50_changed", "numeric_p95_changed"}:
         return "baseline_drift"
+    if code in {
+        "null_rate_history_band",
+        "row_count_history_band",
+        "numeric_p50_history_band",
+        "numeric_p95_history_band",
+    }:
+        return "historical_drift"
     if code in {
         "baseline_missing",
         "baseline_missing_for_environment",
@@ -210,6 +240,13 @@ def _confidence_for_code(code: str) -> Confidence:
     }:
         return "high"
     if code in {
+        "null_rate_history_band",
+        "row_count_history_band",
+        "numeric_p50_history_band",
+        "numeric_p95_history_band",
+    }:
+        return "medium"
+    if code in {
         "row_count_changed",
         "baseline_missing",
         "baseline_missing_for_environment",
@@ -227,6 +264,13 @@ def _remediation_for_code(code: str) -> str:
         return "Fix the upstream data or relax the contract if the change is expected."
     if code in {"null_rate_changed", "row_count_changed", "numeric_p50_changed", "numeric_p95_changed"}:
         return "Investigate the upstream change or refresh the baseline if the drift is expected."
+    if code in {
+        "null_rate_history_band",
+        "row_count_history_band",
+        "numeric_p50_history_band",
+        "numeric_p95_history_band",
+    }:
+        return "Investigate the recent trend or enable backfill mode if this burst is expected."
     if code in {
         "baseline_missing",
         "baseline_missing_for_environment",
@@ -253,6 +297,10 @@ def _stable_code_for_internal(code: str) -> str:
         "schema_column_added": "schema.column_added",
         "row_count_changed": "drift.row_count_changed",
         "null_rate_changed": "drift.null_rate_changed",
+        "row_count_history_band": "drift.row_count_history_band",
+        "null_rate_history_band": "drift.null_rate_history_band",
+        "numeric_p50_history_band": "drift.numeric_p50_history_band",
+        "numeric_p95_history_band": "drift.numeric_p95_history_band",
         "baseline_missing_for_source": "baseline.missing_for_source",
         "baseline_missing_for_environment": "baseline.missing_for_environment",
         "baseline_missing": "baseline.missing",

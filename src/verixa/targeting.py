@@ -25,6 +25,14 @@ class TargetsConfig:
     dbt_manifest_path: Path | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class DbtSourceMetadata:
+    """Optional metadata imported from dbt source nodes."""
+
+    owners: tuple[str, ...] = ()
+    criticality: str | None = None
+
+
 ConfigLoader = Callable[[Path | None], ProjectConfig]
 TargetsLoader = Callable[[Path | None], TargetsConfig | None]
 ChangedFileProvider = Callable[..., tuple[str, ...]]
@@ -136,6 +144,38 @@ def resolve_source_names(
     union = set(matched_sources)
     union.update(dbt_matches)
     return tuple(source_name for source_name in config.sources if source_name in union)
+
+
+def load_dbt_downstream_models(
+    config: ProjectConfig,
+    *,
+    targets_path: Path | None = None,
+    targets_loader: TargetsLoader = load_targets_config,
+) -> dict[str, tuple[str, ...]]:
+    """Load downstream dbt model names for each configured Verixa source."""
+
+    targets_config = targets_loader(targets_path)
+    if targets_config is None or targets_config.dbt_manifest_path is None:
+        return {}
+
+    manifest = _load_dbt_manifest(targets_config.dbt_manifest_path)
+    return _map_dbt_downstream_models(manifest, config)
+
+
+def load_dbt_source_metadata(
+    config: ProjectConfig,
+    *,
+    targets_path: Path | None = None,
+    targets_loader: TargetsLoader = load_targets_config,
+) -> dict[str, DbtSourceMetadata]:
+    """Load optional owner and criticality metadata from dbt source nodes."""
+
+    targets_config = targets_loader(targets_path)
+    if targets_config is None or targets_config.dbt_manifest_path is None:
+        return {}
+
+    manifest = _load_dbt_manifest(targets_config.dbt_manifest_path)
+    return _map_dbt_source_metadata(manifest, config)
 
 
 def list_changed_files_against(base_ref: str, *, cwd: Path) -> tuple[str, ...]:
@@ -271,6 +311,59 @@ def _match_dbt_source_names(
     return tuple(source_name for source_name in config.sources if source_name in matched)
 
 
+def _map_dbt_downstream_models(
+    manifest: dict[str, Any],
+    config: ProjectConfig,
+) -> dict[str, tuple[str, ...]]:
+    verixa_source_lookup = _build_verixa_source_lookup(config)
+    impacts: dict[str, set[str]] = {source_name: set() for source_name in config.sources}
+
+    for unique_id, node in manifest["nodes"].items():
+        if not isinstance(node, dict) or node.get("resource_type") != "model":
+            continue
+        model_name = _dbt_model_name(unique_id, node)
+        for source_id in _collect_upstream_source_ids(unique_id, manifest):
+            source_node = manifest["sources"].get(source_id)
+            if not isinstance(source_node, dict):
+                continue
+            for table_key in _dbt_source_table_keys(source_node):
+                for source_name in verixa_source_lookup.get(table_key, ()):
+                    impacts[source_name].add(model_name)
+
+    return {
+        source_name: tuple(sorted(model_names))
+        for source_name, model_names in impacts.items()
+        if model_names
+    }
+
+
+def _map_dbt_source_metadata(
+    manifest: dict[str, Any],
+    config: ProjectConfig,
+) -> dict[str, DbtSourceMetadata]:
+    verixa_source_lookup = _build_verixa_source_lookup(config)
+    metadata: dict[str, DbtSourceMetadata] = {}
+
+    for node in manifest["sources"].values():
+        if not isinstance(node, dict):
+            continue
+        source_metadata = _dbt_source_metadata(node)
+        if source_metadata is None:
+            continue
+        for table_key in _dbt_source_table_keys(node):
+            for source_name in verixa_source_lookup.get(table_key, ()):
+                existing = metadata.get(source_name)
+                if existing is None:
+                    metadata[source_name] = source_metadata
+                    continue
+                metadata[source_name] = DbtSourceMetadata(
+                    owners=tuple(dict.fromkeys((*existing.owners, *source_metadata.owners))),
+                    criticality=existing.criticality or source_metadata.criticality,
+                )
+
+    return metadata
+
+
 def _load_dbt_manifest(manifest_path: Path) -> dict[str, Any]:
     if not manifest_path.exists():
         raise ConfigError(
@@ -387,6 +480,37 @@ def _dbt_source_table_keys(node: dict[str, Any]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(values))
 
 
+def _dbt_model_name(unique_id: str, node: dict[str, Any]) -> str:
+    alias = node.get("alias")
+    if isinstance(alias, str) and alias.strip():
+        return alias.strip()
+    name = node.get("name")
+    if isinstance(name, str) and name.strip():
+        return name.strip()
+    return unique_id
+
+
+def _dbt_source_metadata(node: dict[str, Any]) -> DbtSourceMetadata | None:
+    meta = _extract_dbt_meta(node)
+    verixa_meta = meta.get("verixa")
+    if not isinstance(verixa_meta, dict):
+        verixa_meta = {}
+
+    owners = _normalize_optional_string_values(
+        verixa_meta.get("owners", meta.get("owners", meta.get("owner")))
+    )
+    criticality = _normalize_optional_criticality(
+        verixa_meta.get("criticality", meta.get("criticality"))
+    )
+
+    if not owners and criticality is None:
+        return None
+    return DbtSourceMetadata(
+        owners=owners,
+        criticality=criticality,
+    )
+
+
 def _collect_upstream_source_ids(
     node_id: str,
     manifest: dict[str, Any],
@@ -426,6 +550,45 @@ def _normalize_optional_path(value: Any) -> str | None:
     while normalized.startswith("./"):
         normalized = normalized[2:]
     return normalized.lower()
+
+
+def _extract_dbt_meta(node: dict[str, Any]) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+    config = node.get("config")
+    if isinstance(config, dict):
+        config_meta = config.get("meta")
+        if isinstance(config_meta, dict):
+            merged.update(config_meta)
+    node_meta = node.get("meta")
+    if isinstance(node_meta, dict):
+        merged.update(node_meta)
+    return merged
+
+
+def _normalize_optional_string_values(value: Any) -> tuple[str, ...]:
+    if isinstance(value, str):
+        cleaned = value.strip()
+        return (cleaned,) if cleaned else ()
+    if not isinstance(value, (list, tuple)):
+        return ()
+
+    items: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        cleaned = item.strip()
+        if not cleaned or cleaned in seen:
+            continue
+        items.append(cleaned)
+        seen.add(cleaned)
+    return tuple(items)
+
+
+def _normalize_optional_criticality(value: Any) -> str | None:
+    if value in {"low", "medium", "high"}:
+        return value
+    return None
 
 
 def _normalize_changed_files(changed_files: tuple[str, ...] | list[str]) -> tuple[str, ...]:

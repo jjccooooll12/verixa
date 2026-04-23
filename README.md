@@ -26,12 +26,19 @@ Implemented now:
 - contract checks and baseline drift heuristics
 - lightweight numeric distribution summaries for declared numeric columns
 - low-noise numeric p50/p95 drift detection from stored baselines
+- execution modes for live queries: `cheap`, `bounded`, and `full`
+- confidence notes on findings when bounded or cheap execution reduces certainty
+- opt-in history-aware drift bands for noisy sources
+- explicit backfill mode for bursty sources
 - text and JSON output
 - GitHub-friendly markdown and annotation output for PR workflows
+- PR summaries that call out potential downstream dbt model impact when manifest data is available
 - stable `policy-v1` output for external policy engines such as OPA
 - source scoping with `--source`
 - changed-file source targeting with `verixa.targets.yaml`, `--changed-file`, and `--changed-against`
 - optional dbt-manifest lineage for changed-file source targeting
+- dbt-derived downstream model impact attached to findings when a manifest is configured
+- dbt-derived source owners and criticality imported into findings when manifest metadata is present
 - BigQuery byte estimation with `verixa cost` and `--estimate-bytes`
 - Snowflake query-history usage reporting with `verixa cost --history-window`
 - max-bytes-billed enforcement for live BigQuery queries
@@ -43,7 +50,7 @@ Implemented now:
 - CI-friendly exit codes
 
 Current local suite status:
-- `128 passed, 2 skipped`
+- `175 passed, 2 skipped`
 
 ## Install
 
@@ -158,8 +165,16 @@ sources:
     scan:
       timestamp_column: created_at
       lookback: 30d
+    history:
+      window: 5
+      minimum_snapshots: 3
+      row_count: true
+      null_rate: true
+      numeric_distribution: true
+      backfill_mode: false
     check:
       fail_on_warning: false
+      advisory: false
     rules:
       row_count_change:
         warning_drop_ratio: 0.10
@@ -188,16 +203,31 @@ Notes:
 - `freshness` is explicit in v1: `column` plus `max_age`.
 - `scan` is optional. Use it to bound expensive stats queries to a recent time window.
 - `scan.timestamp_column` supports `timestamp`, `datetime`, and `date` columns.
+- `history` is optional per source. Use it to switch noisy drift checks from single-baseline comparison to rolling historical bands.
+- `history.window` controls how many stored snapshots are considered.
+- `history.minimum_snapshots` controls when history-aware drift becomes active.
+- `history.backfill_mode` suppresses row-count drift for expected backfills or bursty loads.
+- runtime commands support `--execution-mode cheap|bounded|full`.
+- `cheap` skips numeric summaries and exact row-count drift collection to reduce warehouse cost.
+- `bounded` is the default and respects configured scan windows.
+- `full` ignores configured scan windows for full-table stats where supported by the command.
+- findings from bounded or cheap execution modes carry explicit confidence notes in JSON, policy, and PR-friendly outputs.
 - `warehouse.max_bytes_billed` is optional. Use it to cap live BigQuery stats queries.
 - Snowflake configs support either `warehouse.connection_name` or explicit `account` + `user`.
 - Snowflake tables can be declared as `database.schema.table`, `schema.table` when `warehouse.database` is set, or `table` when both `warehouse.database` and `warehouse.schema` are set.
 - top-level `rules` is optional.
 - per-source `rules` overrides only the thresholds specified for that source.
 - `severity_overrides` is optional per source. Use stable dotted finding codes such as `drift.row_count_changed`.
+- `check.advisory` is optional at project or source scope. Advisory findings are reported but do not fail `verixa check`.
 - numeric distribution drift currently uses stored `p50` and `p95` summaries for declared numeric columns.
 - `numeric_distribution_change.minimum_baseline_value` suppresses noise on near-zero baselines.
 - `check.fail_on_warning` is optional at project or source scope.
 - `baseline.warning_age` is optional. Set it to `null` to disable stale-baseline warnings.
+- when `verixa.targets.yaml` includes `dbt.manifest_path`, findings can include downstream dbt model names that depend on the source.
+- dbt source metadata can enrich findings from manifest `meta` or `config.meta`.
+- supported dbt metadata keys are `meta.verixa.owners`, `meta.verixa.criticality`, plus fallback `meta.owner`, `meta.owners`, and `meta.criticality`.
+- explicit values in `verixa.risk.yaml` still win; dbt metadata only backfills missing ownership or criticality and adds downstream model context.
+- history-aware drift stores recent captured snapshots under `.verixa/history/snapshots/<environment>/`.
 - test columns must be declared in `schema`.
 
 Example Snowflake warehouse block:
@@ -379,13 +409,45 @@ Behavior:
 - supports `--max-bytes-billed` on BigQuery
 - supports `--fail-on-error`
 - supports `--fail-on-warning`
+- supports `--advisory` for non-blocking rollout
 - honors `sources.<name>.check.fail_on_warning: true`
 - applies matching suppressions from `verixa.suppressions.yaml` before evaluating CI failure conditions
+- honors project-level and source-level `check.advisory: true`
 
 Exit codes:
 - `0`: success or warnings only
 - `1`: findings matched the configured failure policy
 - `2`: runtime, auth, config, or storage failure
+
+### Advisory Rollout
+Use advisory mode when you want Verixa to publish findings in CI without blocking merges yet.
+
+Project-level:
+
+```yaml
+check:
+  advisory: true
+```
+
+Source-level:
+
+```yaml
+sources:
+  stripe.transactions:
+    check:
+      advisory: true
+```
+
+One-off CLI override:
+
+```bash
+verixa check --fail-on-error --advisory
+```
+
+Behavior:
+- advisory findings are still rendered and exported
+- advisory findings do not trigger non-zero exit codes
+- source-level advisory lets you roll out Verixa incrementally by source
 
 ### `verixa status`
 Shows:
@@ -609,6 +671,11 @@ Current behavior:
 - accepted-values samples are deterministic for CI diffability
 - source capture runs in conservative parallelism to reduce wall-clock time on multi-source runs
 - scan windows can bound expensive stats queries to recent `TIMESTAMP`, `DATETIME`, or `DATE` slices
+- `--execution-mode cheap` skips numeric summaries and exact row-count drift collection
+- `--execution-mode bounded` keeps the configured scan-window behavior
+- `--execution-mode full` ignores configured scan windows for full-table stats
+- bounded and cheap modes annotate affected findings with explicit confidence notes so reviewers can see when a result came from a partial-cost execution path
+- history-aware drift uses deterministic rolling median bands from recent stored snapshots instead of a single baseline when enabled per source
 - `verixa cost` and `--estimate-bytes` use BigQuery dry runs to estimate query cost
 - `warehouse.max_bytes_billed` and `--max-bytes-billed` can hard-stop live queries that would exceed a configured ceiling
 - Snowflake does not yet expose pre-run byte estimation or max-bytes-billed enforcement through Verixa

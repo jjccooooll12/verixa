@@ -85,6 +85,9 @@ def render_diff_result_json(
             "suppressed_findings": len(lifecycle.suppressed_findings),
             "warning_policy_failures": result.warning_policy_failure_count,
             "warning_policy_sources": list(result.warning_policy_sources),
+            "advisory_mode": result.advisory_mode_enabled,
+            "advisory_sources": list(result.advisory_sources),
+            "execution_mode": result.execution_mode,
             "sources_checked": result.sources_checked,
             "used_baseline": result.used_baseline,
             "estimated_bytes_processed": None

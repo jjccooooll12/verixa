@@ -58,32 +58,49 @@ def test_plan_alias_maps_to_diff() -> None:
     runner = CliRunner()
     seen: dict[str, object] = {}
 
-    def _run_diff(config, risk_path=None, source_names=(), environment=None, max_bytes_billed=None):  # noqa: ANN001
+    def _run_diff(  # noqa: ANN001
+        config,
+        risk_path=None,
+        source_names=(),
+        environment=None,
+        max_bytes_billed=None,
+        execution_mode="bounded",
+    ):
         seen["called"] = True
         seen["environment"] = environment
+        seen["execution_mode"] = execution_mode
         return DiffResult(findings=(), sources_checked=1, used_baseline=True)
 
     app = build_app(run_diff=_run_diff)
-    result = runner.invoke(app, ["plan"])
+    result = runner.invoke(app, ["plan", "--execution-mode", "full"])
 
     assert result.exit_code == 0
     assert seen["called"] is True
     assert seen["environment"] is None
+    assert seen["execution_mode"] == "full"
 
 
 def test_test_alias_maps_to_validate() -> None:
     runner = CliRunner()
     seen: dict[str, object] = {}
 
-    def _run_validate(config, risk_path=None, source_names=(), max_bytes_billed=None):  # noqa: ANN001
+    def _run_validate(  # noqa: ANN001
+        config,
+        risk_path=None,
+        source_names=(),
+        max_bytes_billed=None,
+        execution_mode="bounded",
+    ):
         seen["called"] = True
+        seen["execution_mode"] = execution_mode
         return DiffResult(findings=(), sources_checked=1, used_baseline=False)
 
     app = build_app(run_validate=_run_validate)
-    result = runner.invoke(app, ["test"])
+    result = runner.invoke(app, ["test", "--execution-mode", "cheap"])
 
     assert result.exit_code == 0
     assert seen["called"] is True
+    assert seen["execution_mode"] == "cheap"
 
 
 def test_status_command_renders_text() -> None:
@@ -156,7 +173,15 @@ def test_explain_command_renders_text() -> None:
             "schema": [{"name": "amount", "type": "FLOAT64"}],
             "freshness": {"column": "created_at", "max_age": "1h"},
             "scan": None,
-            "check": {"fail_on_warning": False},
+            "history": {
+                "window": 5,
+                "minimum_snapshots": 3,
+                "row_count": True,
+                "null_rate": True,
+                "numeric_distribution": True,
+                "backfill_mode": False,
+            },
+            "check": {"fail_on_warning": False, "advisory": False},
             "rules": {
                 "null_rate_change": {"warning_delta": 0.01, "error_delta": 0.05},
                 "row_count_change": {
@@ -180,6 +205,7 @@ def test_explain_command_renders_text() -> None:
     assert result.exit_code == 0
     assert "raw.stripe_transactions" in result.stdout
     assert "no_nulls: amount" in result.stdout
+    assert "History drift: window=5" in result.stdout
     assert "numeric_distribution_change" in result.stdout
 
 
@@ -206,7 +232,8 @@ def test_explain_command_renders_snowflake_warehouse_details() -> None:
             "schema": [{"name": "amount", "type": "FLOAT64"}],
             "freshness": None,
             "scan": None,
-            "check": {"fail_on_warning": False},
+            "history": None,
+            "check": {"fail_on_warning": False, "advisory": False},
             "rules": {
                 "null_rate_change": {"warning_delta": 0.01, "error_delta": 0.05},
                 "row_count_change": {
@@ -356,6 +383,33 @@ def test_cost_command_passes_history_window() -> None:
     assert seen["command"] == "diff"
     assert seen["history_window_seconds"] == 1800
     assert "recent Snowflake usage" in result.stdout
+
+
+def test_cost_command_passes_execution_mode() -> None:
+    runner = CliRunner()
+    seen: dict[str, object] = {}
+
+    def _run_cost(  # noqa: ANN001
+        config,
+        command,
+        source_names=(),
+        max_bytes_billed=None,
+        history_window_seconds=None,
+        execution_mode="bounded",
+    ):
+        seen["execution_mode"] = execution_mode
+        return CostReport(
+            command="diff",
+            mode="estimate",
+            estimates={"stripe.transactions": 2048},
+            max_bytes_billed=max_bytes_billed,
+        )
+
+    app = build_app(run_cost=_run_cost)
+    result = runner.invoke(app, ["cost", "diff", "--execution-mode", "cheap"])
+
+    assert result.exit_code == 0
+    assert seen["execution_mode"] == "cheap"
 
 
 def test_diff_command_can_target_sources_from_changed_files() -> None:

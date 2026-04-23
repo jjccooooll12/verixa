@@ -2,24 +2,31 @@
 
 from __future__ import annotations
 
-from verixa.contracts.models import BaselineConfig, ProjectConfig
+from verixa.contracts.models import BaselineConfig, ProjectConfig, SourceContract
 from verixa.diff.models import DiffResult, Finding
 from verixa.diff.risk import RiskConfig, SourceRiskHints
 from verixa.findings.schema import stable_code_for_internal
 from verixa.rules.accepted_values import check_accepted_values
 from verixa.rules.freshness import check_freshness
+from verixa.rules.history_band import (
+    check_null_rate_history_band,
+    check_numeric_history_band,
+    check_row_count_history_band,
+)
 from verixa.rules.no_nulls import check_no_nulls
 from verixa.rules.numeric_distribution_change import check_numeric_distribution_changes
 from verixa.rules.null_rate_change import check_null_rate_changes
 from verixa.rules.row_count_change import check_row_count_change
 from verixa.rules.schema_drift import check_schema_drift
-from verixa.snapshot.models import ProjectSnapshot
+from verixa.snapshot.models import ProjectSnapshot, SourceSnapshot
 
 
 def build_test_result(
     config: ProjectConfig,
     current_snapshot: ProjectSnapshot,
     risk_config: RiskConfig | None = None,
+    *,
+    execution_mode: str = "bounded",
 ) -> DiffResult:
     """Build findings using only contract-vs-current checks."""
 
@@ -37,6 +44,7 @@ def build_test_result(
         sources_checked=len(config.sources),
         used_baseline=False,
         risk_config=risk_config,
+        execution_mode=execution_mode,
     )
 
 
@@ -45,6 +53,9 @@ def build_plan_result(
     baseline_snapshot: ProjectSnapshot,
     current_snapshot: ProjectSnapshot,
     risk_config: RiskConfig | None = None,
+    historical_snapshots: tuple[ProjectSnapshot, ...] = (),
+    *,
+    execution_mode: str = "bounded",
 ) -> DiffResult:
     """Build findings using both contract and baseline comparisons."""
 
@@ -57,6 +68,11 @@ def build_plan_result(
         contract = config.sources[source_name]
         current = current_snapshot.sources[source_name]
         baseline = baseline_snapshot.sources.get(source_name)
+        source_history = _source_history(
+            historical_snapshots,
+            source_name,
+            window=None if contract.history is None else contract.history.window,
+        )
 
         findings.extend(check_schema_drift(contract, current))
         findings.extend(check_no_nulls(contract, current))
@@ -74,30 +90,94 @@ def build_plan_result(
             )
             continue
 
-        findings.extend(
-            check_null_rate_changes(
-                contract,
-                baseline,
-                current,
-                thresholds=contract.rules.null_rate_change,
+        if _use_history_mode(contract, source_history):
+            history_config = contract.history
+            assert history_config is not None
+            if history_config.null_rate:
+                findings.extend(
+                    check_null_rate_history_band(
+                        contract,
+                        source_history,
+                        current,
+                        thresholds=contract.rules.null_rate_change,
+                        history_config=history_config,
+                    )
+                )
+            else:
+                findings.extend(
+                    check_null_rate_changes(
+                        contract,
+                        baseline,
+                        current,
+                        thresholds=contract.rules.null_rate_change,
+                    )
+                )
+
+            if history_config.row_count:
+                findings.extend(
+                    check_row_count_history_band(
+                        contract,
+                        source_history,
+                        current,
+                        thresholds=contract.rules.row_count_change,
+                        history_config=history_config,
+                    )
+                )
+            elif not history_config.backfill_mode:
+                findings.extend(
+                    check_row_count_change(
+                        contract,
+                        baseline,
+                        current,
+                        thresholds=contract.rules.row_count_change,
+                    )
+                )
+
+            if history_config.numeric_distribution:
+                findings.extend(
+                    check_numeric_history_band(
+                        contract,
+                        source_history,
+                        current,
+                        thresholds=contract.rules.numeric_distribution_change,
+                        history_config=history_config,
+                    )
+                )
+            else:
+                findings.extend(
+                    check_numeric_distribution_changes(
+                        contract,
+                        baseline,
+                        current,
+                        thresholds=contract.rules.numeric_distribution_change,
+                    )
+                )
+        else:
+            findings.extend(
+                check_null_rate_changes(
+                    contract,
+                    baseline,
+                    current,
+                    thresholds=contract.rules.null_rate_change,
+                )
             )
-        )
-        findings.extend(
-            check_row_count_change(
-                contract,
-                baseline,
-                current,
-                thresholds=contract.rules.row_count_change,
+            if contract.history is None or not contract.history.backfill_mode:
+                findings.extend(
+                    check_row_count_change(
+                        contract,
+                        baseline,
+                        current,
+                        thresholds=contract.rules.row_count_change,
+                    )
+                )
+            findings.extend(
+                check_numeric_distribution_changes(
+                    contract,
+                    baseline,
+                    current,
+                    thresholds=contract.rules.numeric_distribution_change,
+                )
             )
-        )
-        findings.extend(
-            check_numeric_distribution_changes(
-                contract,
-                baseline,
-                current,
-                thresholds=contract.rules.numeric_distribution_change,
-            )
-        )
 
     return _finalize(
         findings,
@@ -105,6 +185,7 @@ def build_plan_result(
         sources_checked=len(config.sources),
         used_baseline=True,
         risk_config=risk_config,
+        execution_mode=execution_mode,
     )
 
 
@@ -115,11 +196,16 @@ def _finalize(
     sources_checked: int,
     used_baseline: bool,
     risk_config: RiskConfig | None,
+    execution_mode: str,
 ) -> DiffResult:
     enriched = [
-        _apply_severity_override(
-            _attach_risks(finding, risk_config),
+        _apply_confidence_metadata(
+            _apply_severity_override(
+                _attach_risks(finding, risk_config),
+                config,
+            ),
             config,
+            execution_mode=execution_mode,
         )
         for finding in findings
     ]
@@ -129,6 +215,9 @@ def _finalize(
         sources_checked=sources_checked,
         used_baseline=used_baseline,
         warning_policy_sources=_warning_policy_sources(config, list(ordered)),
+        advisory_mode_enabled=config.check.advisory,
+        advisory_sources=_advisory_sources(config),
+        execution_mode=execution_mode,
     )
 
 
@@ -153,6 +242,15 @@ def _attach_risks(finding: Finding, risk_config: RiskConfig | None) -> Finding:
         risks=unique_risks,
         owners=hints.owners,
         source_criticality=hints.criticality,
+        downstream_models=hints.downstream_models,
+        confidence_override=finding.confidence_override,
+        confidence_reason=finding.confidence_reason,
+        history_metric=finding.history_metric,
+        history_window=finding.history_window,
+        history_sample_size=finding.history_sample_size,
+        history_center_value=finding.history_center_value,
+        history_lower_bound=finding.history_lower_bound,
+        history_upper_bound=finding.history_upper_bound,
     )
 
 
@@ -177,6 +275,64 @@ def _apply_severity_override(
         risks=finding.risks,
         owners=finding.owners,
         source_criticality=finding.source_criticality,
+        downstream_models=finding.downstream_models,
+        confidence_override=finding.confidence_override,
+        confidence_reason=finding.confidence_reason,
+        history_metric=finding.history_metric,
+        history_window=finding.history_window,
+        history_sample_size=finding.history_sample_size,
+        history_center_value=finding.history_center_value,
+        history_lower_bound=finding.history_lower_bound,
+        history_upper_bound=finding.history_upper_bound,
+    )
+
+
+def _apply_confidence_metadata(
+    finding: Finding,
+    config: ProjectConfig,
+    *,
+    execution_mode: str,
+) -> Finding:
+    contract = config.sources.get(finding.source_name)
+    if contract is None or execution_mode == "full":
+        return finding
+
+    confidence_override = finding.confidence_override
+    confidence_reason = finding.confidence_reason
+
+    if contract.scan is not None:
+        confidence_reason = (
+            f"{execution_mode} mode evaluated a bounded window of "
+            f"{contract.scan.lookback} on {contract.scan.timestamp_column}"
+        )
+        confidence_override = _downgrade_confidence(
+            finding.confidence_override or _default_confidence_for_code(finding.code)
+        )
+    elif execution_mode == "cheap" and finding.code == "row_count_changed":
+        confidence_reason = "cheap mode relies on warehouse metadata row counts instead of exact counts"
+        confidence_override = "low"
+
+    if confidence_override == finding.confidence_override and confidence_reason == finding.confidence_reason:
+        return finding
+
+    return Finding(
+        source_name=finding.source_name,
+        severity=finding.severity,
+        code=finding.code,
+        message=finding.message,
+        column=finding.column,
+        risks=finding.risks,
+        owners=finding.owners,
+        source_criticality=finding.source_criticality,
+        downstream_models=finding.downstream_models,
+        confidence_override=confidence_override,
+        confidence_reason=confidence_reason,
+        history_metric=finding.history_metric,
+        history_window=finding.history_window,
+        history_sample_size=finding.history_sample_size,
+        history_center_value=finding.history_center_value,
+        history_lower_bound=finding.history_lower_bound,
+        history_upper_bound=finding.history_upper_bound,
     )
 
 
@@ -227,6 +383,16 @@ def _warning_policy_sources(
     return tuple(sorted(warning_sources))
 
 
+def _advisory_sources(config: ProjectConfig) -> tuple[str, ...]:
+    return tuple(
+        sorted(
+            source_name
+            for source_name, contract in config.sources.items()
+            if contract.check.advisory
+        )
+    )
+
+
 def _format_duration(seconds: int) -> str:
     days, remainder = divmod(seconds, 86400)
     hours, remainder = divmod(remainder, 3600)
@@ -242,3 +408,66 @@ def _format_duration(seconds: int) -> str:
     if not parts:
         parts.append("0m")
     return " ".join(parts[:2])
+
+
+def _source_history(
+    historical_snapshots: tuple[ProjectSnapshot, ...],
+    source_name: str,
+    *,
+    window: int | None,
+) -> tuple[SourceSnapshot, ...]:
+    snapshots = [
+        snapshot.sources[source_name]
+        for snapshot in historical_snapshots
+        if source_name in snapshot.sources
+    ]
+    if window is None:
+        return tuple(snapshots)
+    return tuple(snapshots[-window:])
+
+
+def _use_history_mode(
+    contract: SourceContract,
+    source_history: tuple[SourceSnapshot, ...],
+) -> bool:
+    history_config = contract.history
+    if history_config is None:
+        return False
+    return len(source_history) >= history_config.minimum_snapshots
+
+
+def _default_confidence_for_code(code: str) -> str:
+    if code in {
+        "schema_column_missing",
+        "schema_type_changed",
+        "schema_column_added",
+        "no_nulls_violation",
+        "accepted_values_violation",
+        "freshness_missing",
+        "freshness_violated",
+        "null_rate_changed",
+        "numeric_p50_changed",
+        "numeric_p95_changed",
+    }:
+        return "high"
+    if code in {
+        "row_count_changed",
+        "row_count_history_band",
+        "null_rate_history_band",
+        "numeric_p50_history_band",
+        "numeric_p95_history_band",
+        "baseline_missing",
+        "baseline_missing_for_environment",
+        "baseline_missing_for_source",
+        "baseline_stale",
+    }:
+        return "medium"
+    return "medium"
+
+
+def _downgrade_confidence(confidence: str) -> str:
+    if confidence == "high":
+        return "medium"
+    if confidence == "medium":
+        return "low"
+    return "low"

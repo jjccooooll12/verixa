@@ -6,6 +6,7 @@ from verixa.contracts.models import (
     FreshnessConfig,
     NoNullsTest,
     ProjectConfig,
+    ScanConfig,
     SourceContract,
     WarehouseConfig,
 )
@@ -73,6 +74,12 @@ def _make_project_config() -> ProjectConfig:
                     NoNullsTest(column="amount"),
                     AcceptedValuesTest(column="currency", values=("USD", "EUR")),
                 ),
+                scan=ScanConfig(
+                    timestamp_column="created_at",
+                    column_type="TIMESTAMP",
+                    lookback="30d",
+                    lookback_seconds=30 * 24 * 3600,
+                ),
             ),
         },
     )
@@ -94,6 +101,9 @@ def test_snapshot_service_uses_test_capture_shape() -> None:
         ),
         numeric_summary_columns=(),
         include_exact_row_count=False,
+        scan_timestamp_column="created_at",
+        scan_timestamp_type="TIMESTAMP",
+        scan_lookback_seconds=30 * 24 * 3600,
     )
 
 
@@ -112,6 +122,9 @@ def test_snapshot_service_uses_full_capture_shape_for_plan() -> None:
         ),
         numeric_summary_columns=("amount",),
         include_exact_row_count=True,
+        scan_timestamp_column="created_at",
+        scan_timestamp_type="TIMESTAMP",
+        scan_lookback_seconds=30 * 24 * 3600,
     )
 
 
@@ -126,3 +139,45 @@ def test_snapshot_service_can_estimate_bytes() -> None:
         "stripe.transactions": 1024,
     }
     assert len(connector.estimate_calls) == 2
+
+
+def test_snapshot_service_uses_cheap_capture_shape_for_plan() -> None:
+    connector = _RecordingConnector()
+    service = SnapshotService(connector, max_workers=1)
+
+    service.capture_with_execution_mode(_make_project_config(), mode="plan", execution_mode="cheap")
+
+    requests = {source_name: request for source_name, request in connector.calls}
+    assert requests["stripe.transactions"] == SourceCaptureRequest(
+        null_rate_columns=("amount", "created_at", "currency"),
+        freshness_column="created_at",
+        accepted_values_tests=(
+            AcceptedValuesTest(column="currency", values=("USD", "EUR")),
+        ),
+        numeric_summary_columns=(),
+        include_exact_row_count=False,
+        scan_timestamp_column="created_at",
+        scan_timestamp_type="TIMESTAMP",
+        scan_lookback_seconds=30 * 24 * 3600,
+    )
+
+
+def test_snapshot_service_uses_full_capture_shape_without_scan_window() -> None:
+    connector = _RecordingConnector()
+    service = SnapshotService(connector, max_workers=1)
+
+    service.capture_with_execution_mode(_make_project_config(), mode="snapshot", execution_mode="full")
+
+    requests = {source_name: request for source_name, request in connector.calls}
+    assert requests["stripe.transactions"] == SourceCaptureRequest(
+        null_rate_columns=("amount", "created_at", "currency"),
+        freshness_column="created_at",
+        accepted_values_tests=(
+            AcceptedValuesTest(column="currency", values=("USD", "EUR")),
+        ),
+        numeric_summary_columns=("amount",),
+        include_exact_row_count=True,
+        scan_timestamp_column=None,
+        scan_timestamp_type=None,
+        scan_lookback_seconds=None,
+    )

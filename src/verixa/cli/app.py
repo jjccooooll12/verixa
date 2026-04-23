@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from enum import Enum
+import inspect
 from pathlib import Path
 from typing import Any, Callable
 
@@ -75,6 +76,14 @@ class InitWarehouse(str, Enum):
     SNOWFLAKE = "snowflake"
 
 
+class ExecutionModeOption(str, Enum):
+    """Cost/signal tradeoffs for warehouse execution."""
+
+    CHEAP = "cheap"
+    BOUNDED = "bounded"
+    FULL = "full"
+
+
 @dataclass(frozen=True, slots=True)
 class AppDeps:
     """Explicit command dependencies used to build a CLI instance."""
@@ -101,11 +110,13 @@ def _estimate_bytes_impl(
     source_names: tuple[str, ...],
     *,
     command: str,
+    execution_mode: str = "bounded",
 ) -> dict[str, int]:
     return _run_cost_impl(
         config_path,
         command=command,
         source_names=source_names,
+        execution_mode=execution_mode,
         mode="estimate",
     ).estimates
 
@@ -196,6 +207,11 @@ def create_app(deps: AppDeps | None = None) -> typer.Typer:
             "--estimate-bytes",
             help="Estimate BigQuery bytes processed for the snapshot query shape and include it in output.",
         ),
+        execution_mode: ExecutionModeOption = typer.Option(
+            ExecutionModeOption.BOUNDED,
+            "--execution-mode",
+            help="Execution profile: cheap, bounded, or full.",
+        ),
         max_bytes_billed: str | None = typer.Option(
             None,
             "--max-bytes-billed",
@@ -216,15 +232,23 @@ def create_app(deps: AppDeps | None = None) -> typer.Typer:
             )
             parsed_max_bytes_billed = _parse_max_bytes_billed(max_bytes_billed)
             estimates = (
-                active_deps.estimate_bytes(config, selected_sources, command="snapshot")
+                _call_with_supported_kwargs(
+                    active_deps.estimate_bytes,
+                    config,
+                    selected_sources,
+                    command="snapshot",
+                    execution_mode=execution_mode.value,
+                )
                 if estimate_bytes
                 else None
             )
-            snapshot, baseline_path = active_deps.run_snapshot(
+            snapshot, baseline_path = _call_with_supported_kwargs(
+                active_deps.run_snapshot,
                 config,
                 source_names=selected_sources,
                 environment=environment,
                 max_bytes_billed=parsed_max_bytes_billed,
+                execution_mode=execution_mode.value,
             )
             typer.echo(_render_snapshot_output(snapshot, baseline_path, output, estimates))
         except (ConfigError, ConnectorError, StorageError, ValueError) as exc:
@@ -370,6 +394,11 @@ def create_app(deps: AppDeps | None = None) -> typer.Typer:
             "--estimate-bytes",
             help="Estimate BigQuery bytes processed for the diff query shape and include it in output.",
         ),
+        execution_mode: ExecutionModeOption = typer.Option(
+            ExecutionModeOption.BOUNDED,
+            "--execution-mode",
+            help="Execution profile: cheap, bounded, or full.",
+        ),
         max_bytes_billed: str | None = typer.Option(
             None,
             "--max-bytes-billed",
@@ -390,6 +419,7 @@ def create_app(deps: AppDeps | None = None) -> typer.Typer:
             targets_config=targets_config,
             output=output,
             estimate_bytes=estimate_bytes,
+            execution_mode=execution_mode,
             max_bytes_billed=max_bytes_billed,
         )
 
@@ -404,6 +434,7 @@ def create_app(deps: AppDeps | None = None) -> typer.Typer:
         changed_against: str | None = typer.Option(None, "--changed-against"),
         targets_config: Path | None = typer.Option(Path("verixa.targets.yaml"), "--targets-config"),
         estimate_bytes: bool = typer.Option(False, "--estimate-bytes"),
+        execution_mode: ExecutionModeOption = typer.Option(ExecutionModeOption.BOUNDED, "--execution-mode"),
         max_bytes_billed: str | None = typer.Option(None, "--max-bytes-billed"),
     ) -> None:
         """Legacy alias for ``verixa diff``."""
@@ -420,6 +451,7 @@ def create_app(deps: AppDeps | None = None) -> typer.Typer:
             targets_config=targets_config,
             output=output,
             estimate_bytes=estimate_bytes,
+            execution_mode=execution_mode,
             max_bytes_billed=max_bytes_billed,
         )
 
@@ -460,6 +492,11 @@ def create_app(deps: AppDeps | None = None) -> typer.Typer:
             "--estimate-bytes",
             help="Estimate BigQuery bytes processed for the validate query shape and include it in output.",
         ),
+        execution_mode: ExecutionModeOption = typer.Option(
+            ExecutionModeOption.BOUNDED,
+            "--execution-mode",
+            help="Execution profile: cheap, bounded, or full.",
+        ),
         max_bytes_billed: str | None = typer.Option(
             None,
             "--max-bytes-billed",
@@ -479,6 +516,7 @@ def create_app(deps: AppDeps | None = None) -> typer.Typer:
             targets_config=targets_config,
             output=output,
             estimate_bytes=estimate_bytes,
+            execution_mode=execution_mode,
             max_bytes_billed=max_bytes_billed,
         )
 
@@ -492,6 +530,7 @@ def create_app(deps: AppDeps | None = None) -> typer.Typer:
         changed_against: str | None = typer.Option(None, "--changed-against"),
         targets_config: Path | None = typer.Option(Path("verixa.targets.yaml"), "--targets-config"),
         estimate_bytes: bool = typer.Option(False, "--estimate-bytes"),
+        execution_mode: ExecutionModeOption = typer.Option(ExecutionModeOption.BOUNDED, "--execution-mode"),
         max_bytes_billed: str | None = typer.Option(None, "--max-bytes-billed"),
     ) -> None:
         """Legacy alias for ``verixa validate``."""
@@ -507,6 +546,7 @@ def create_app(deps: AppDeps | None = None) -> typer.Typer:
             targets_config=targets_config,
             output=output,
             estimate_bytes=estimate_bytes,
+            execution_mode=execution_mode,
             max_bytes_billed=max_bytes_billed,
         )
 
@@ -531,6 +571,11 @@ def create_app(deps: AppDeps | None = None) -> typer.Typer:
             False,
             "--fail-on-warning",
             help="Exit with status 1 when any warning-severity findings exist.",
+        ),
+        advisory: bool = typer.Option(
+            False,
+            "--advisory",
+            help="Force advisory mode for this run. Findings are reported but never fail the command.",
         ),
         environment: str | None = typer.Option(
             None,
@@ -562,6 +607,11 @@ def create_app(deps: AppDeps | None = None) -> typer.Typer:
             "--estimate-bytes",
             help="Estimate BigQuery bytes processed for the check query shape and include it in output.",
         ),
+        execution_mode: ExecutionModeOption = typer.Option(
+            ExecutionModeOption.BOUNDED,
+            "--execution-mode",
+            help="Execution profile: cheap, bounded, or full.",
+        ),
         max_bytes_billed: str | None = typer.Option(
             None,
             "--max-bytes-billed",
@@ -582,16 +632,25 @@ def create_app(deps: AppDeps | None = None) -> typer.Typer:
             )
             parsed_max_bytes_billed = _parse_max_bytes_billed(max_bytes_billed)
             estimates = (
-                active_deps.estimate_bytes(config, selected_sources, command="check")
+                _call_with_supported_kwargs(
+                    active_deps.estimate_bytes,
+                    config,
+                    selected_sources,
+                    command="check",
+                    execution_mode=execution_mode.value,
+                )
                 if estimate_bytes
                 else None
             )
-            result = active_deps.run_check(
+            result = _call_with_supported_kwargs(
+                active_deps.run_check,
                 config,
                 risk_path=risk_config,
                 source_names=selected_sources,
+                targets_path=targets_config,
                 environment=environment,
                 max_bytes_billed=parsed_max_bytes_billed,
+                execution_mode=execution_mode.value,
             )
             lifecycle_report = _build_lifecycle_report(
                 result,
@@ -605,9 +664,15 @@ def create_app(deps: AppDeps | None = None) -> typer.Typer:
                 lifecycle_report=lifecycle_report,
                 estimated_bytes_by_source=estimates,
             )
+            effective_advisory = advisory or filtered_result.advisory_mode_enabled
+            rendered_result = (
+                replace(filtered_result, advisory_mode_enabled=True)
+                if effective_advisory and not filtered_result.advisory_mode_enabled
+                else filtered_result
+            )
             typer.echo(
                 _render_diff_output(
-                    filtered_result,
+                    rendered_result,
                     "Check",
                     output,
                     estimates,
@@ -618,12 +683,27 @@ def create_app(deps: AppDeps | None = None) -> typer.Typer:
         except (ConfigError, ConnectorError, StorageError, SuppressionError, ValueError) as exc:
             _exit_with_error(str(exc), output)
 
+        effective_advisory = advisory or filtered_result.advisory_mode_enabled
+        actionable_findings = tuple(
+            finding
+            for finding in filtered_result.findings
+            if finding.source_name not in filtered_result.advisory_sources
+        )
+        actionable_error_count = sum(1 for finding in actionable_findings if finding.severity == "error")
+        actionable_warning_count = sum(
+            1 for finding in actionable_findings if finding.severity == "warning"
+        )
         should_fail = False
-        if fail_on_error and filtered_result.error_count > 0:
+        if not effective_advisory and fail_on_error and actionable_error_count > 0:
             should_fail = True
-        if fail_on_warning and filtered_result.warning_count > 0:
+        if not effective_advisory and fail_on_warning and actionable_warning_count > 0:
             should_fail = True
-        if filtered_result.warning_policy_failure_count > 0:
+        actionable_warning_policy_sources = tuple(
+            source_name
+            for source_name in filtered_result.warning_policy_sources
+            if source_name not in filtered_result.advisory_sources
+        )
+        if not effective_advisory and actionable_warning_policy_sources:
             should_fail = True
         if should_fail:
             raise typer.Exit(code=FINDINGS_ERROR)
@@ -763,6 +843,11 @@ def create_app(deps: AppDeps | None = None) -> typer.Typer:
             "--history-window",
             help="For Snowflake, report recent warehouse usage within this lookback window, for example 30m or 1h.",
         ),
+        execution_mode: ExecutionModeOption = typer.Option(
+            ExecutionModeOption.BOUNDED,
+            "--execution-mode",
+            help="Execution profile used for estimate mode: cheap, bounded, or full.",
+        ),
         output: BasicOutputFormat = typer.Option(BasicOutputFormat.TEXT, "--format", help="Output format."),
     ) -> None:
         """Estimate BigQuery bytes or report recent Snowflake usage for one workflow step."""
@@ -777,12 +862,14 @@ def create_app(deps: AppDeps | None = None) -> typer.Typer:
                 targets_path=targets_config,
                 output=output,
             )
-            report = active_deps.run_cost(
+            report = _call_with_supported_kwargs(
+                active_deps.run_cost,
                 config,
                 command=command,
                 source_names=selected_sources,
                 max_bytes_billed=_parse_max_bytes_billed(max_bytes_billed),
                 history_window_seconds=_parse_history_window(history_window),
+                execution_mode=execution_mode.value,
             )
             typer.echo(_render_cost_output(report, output))
         except (ConfigError, ConnectorError, StorageError, ValueError) as exc:
@@ -804,6 +891,7 @@ def _run_diff_like_command(
     targets_config: Path | None,
     output: FindingOutputFormat,
     estimate_bytes: bool,
+    execution_mode: ExecutionModeOption,
     max_bytes_billed: str | None,
 ) -> None:
     try:
@@ -818,16 +906,25 @@ def _run_diff_like_command(
         )
         parsed_max_bytes_billed = _parse_max_bytes_billed(max_bytes_billed)
         estimates = (
-            deps.estimate_bytes(config, selected_sources, command=command_name)
+            _call_with_supported_kwargs(
+                deps.estimate_bytes,
+                config,
+                selected_sources,
+                command=command_name,
+                execution_mode=execution_mode.value,
+            )
         if estimate_bytes
             else None
         )
-        result = deps.run_diff(
+        result = _call_with_supported_kwargs(
+            deps.run_diff,
             config,
             risk_path=risk_config,
             source_names=selected_sources,
+            targets_path=targets_config,
             environment=environment,
             max_bytes_billed=parsed_max_bytes_billed,
+            execution_mode=execution_mode.value,
         )
         lifecycle_report = _build_lifecycle_report(
             result,
@@ -867,6 +964,7 @@ def _run_validate_like_command(
     targets_config: Path | None,
     output: FindingOutputFormat,
     estimate_bytes: bool,
+    execution_mode: ExecutionModeOption,
     max_bytes_billed: str | None,
 ) -> None:
     try:
@@ -881,15 +979,24 @@ def _run_validate_like_command(
         )
         parsed_max_bytes_billed = _parse_max_bytes_billed(max_bytes_billed)
         estimates = (
-            deps.estimate_bytes(config, selected_sources, command=command_name)
+            _call_with_supported_kwargs(
+                deps.estimate_bytes,
+                config,
+                selected_sources,
+                command=command_name,
+                execution_mode=execution_mode.value,
+            )
             if estimate_bytes
             else None
         )
-        result = deps.run_validate(
+        result = _call_with_supported_kwargs(
+            deps.run_validate,
             config,
             risk_path=risk_config,
             source_names=selected_sources,
+            targets_path=targets_config,
             max_bytes_billed=parsed_max_bytes_billed,
+            execution_mode=execution_mode.value,
         )
         lifecycle_report = _build_lifecycle_report(
             result,
@@ -938,6 +1045,26 @@ def _resolve_cli_source_names(
         )
     except (ConfigError, ConnectorError, StorageError, ValueError) as exc:
         _exit_with_error(str(exc), output)
+
+
+def _call_with_supported_kwargs(
+    func: Callable[..., Any],
+    *args: Any,
+    **kwargs: Any,
+) -> Any:
+    signature = inspect.signature(func)
+    accepts_var_keyword = any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in signature.parameters.values()
+    )
+    if accepts_var_keyword:
+        return func(*args, **kwargs)
+    supported = {
+        name: value
+        for name, value in kwargs.items()
+        if name in signature.parameters
+    }
+    return func(*args, **supported)
 
 
 def _render_snapshot_output(
@@ -1272,7 +1399,24 @@ def _render_explain_output(payload: dict[str, Any], output: BasicOutputFormat) -
         lines.append(
             f"- Scan: {payload['scan']['column']} ({payload['scan']['column_type']}) over {payload['scan']['lookback']}"
         )
-    lines.append(f"- Warning policy: fail_on_warning={str(payload['check']['fail_on_warning']).lower()}")
+    history = payload.get("history")
+    if history is None:
+        lines.append("- History drift: disabled")
+    else:
+        lines.append(
+            "- History drift: "
+            f"window={history['window']}, "
+            f"minimum_snapshots={history['minimum_snapshots']}, "
+            f"row_count={str(history['row_count']).lower()}, "
+            f"null_rate={str(history['null_rate']).lower()}, "
+            f"numeric_distribution={str(history['numeric_distribution']).lower()}, "
+            f"backfill_mode={str(history['backfill_mode']).lower()}"
+        )
+    lines.append(
+        "- Warning policy: "
+        f"fail_on_warning={str(payload['check']['fail_on_warning']).lower()}, "
+        f"advisory={str(payload['check']['advisory']).lower()}"
+    )
     lines.append("Schema:")
     for column in payload["schema"]:
         lines.append(f"- {column['name']}: {column['type']}")

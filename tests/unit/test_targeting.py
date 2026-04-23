@@ -8,7 +8,13 @@ import pytest
 
 from verixa.config.errors import ConfigError
 from verixa.contracts.models import ProjectConfig, SourceContract, WarehouseConfig
-from verixa.targeting import load_targets_config, list_changed_files_against, resolve_source_names
+from verixa.targeting import (
+    load_dbt_source_metadata,
+    load_dbt_downstream_models,
+    load_targets_config,
+    list_changed_files_against,
+    resolve_source_names,
+)
 
 
 def _project_config() -> ProjectConfig:
@@ -306,6 +312,123 @@ dbt:
     )
 
     assert resolved == ("stripe.transactions",)
+
+
+def test_load_dbt_downstream_models_maps_sources_to_models(tmp_path: Path) -> None:
+    manifest_path = tmp_path / "target" / "manifest.json"
+    manifest_path.parent.mkdir()
+    manifest_path.write_text(
+        """
+{
+  "nodes": {
+    "model.demo.stg_orders": {
+      "resource_type": "model",
+      "name": "stg_orders",
+      "original_file_path": "models/staging/orders.sql",
+      "depends_on": {
+        "nodes": ["source.demo.raw.stripe_transactions"],
+        "macros": []
+      }
+    },
+    "model.demo.fct_orders": {
+      "resource_type": "model",
+      "name": "fct_orders",
+      "original_file_path": "models/marts/fct_orders.sql",
+      "depends_on": {
+        "nodes": ["model.demo.stg_orders"],
+        "macros": []
+      }
+    }
+  },
+  "sources": {
+    "source.demo.raw.stripe_transactions": {
+      "database": "demo",
+      "schema": "raw",
+      "identifier": "stripe_transactions",
+      "name": "stripe_transactions",
+      "original_file_path": "models/sources/stripe.yml",
+      "depends_on": {
+        "nodes": []
+      }
+    }
+  },
+  "macros": {}
+}
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    targets_path = tmp_path / "verixa.targets.yaml"
+    targets_path.write_text(
+        """
+dbt:
+  manifest_path: target/manifest.json
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    impacts = load_dbt_downstream_models(_project_config(), targets_path=targets_path)
+
+    assert impacts == {
+        "stripe.transactions": ("fct_orders", "stg_orders"),
+    }
+
+
+def test_load_dbt_source_metadata_maps_owners_and_criticality(tmp_path: Path) -> None:
+    manifest_path = tmp_path / "target" / "manifest.json"
+    manifest_path.parent.mkdir()
+    manifest_path.write_text(
+        """
+{
+  "nodes": {},
+  "sources": {
+    "source.demo.raw.stripe_transactions": {
+      "database": "demo",
+      "schema": "raw",
+      "identifier": "stripe_transactions",
+      "name": "stripe_transactions",
+      "meta": {
+        "verixa": {
+          "owners": ["finance", "data-platform"],
+          "criticality": "high"
+        }
+      }
+    },
+    "source.demo.raw.stripe_customers": {
+      "database": "demo",
+      "schema": "raw",
+      "identifier": "stripe_customers",
+      "name": "stripe_customers",
+      "config": {
+        "meta": {
+          "owner": "growth"
+        }
+      }
+    }
+  },
+  "macros": {}
+}
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    targets_path = tmp_path / "verixa.targets.yaml"
+    targets_path.write_text(
+        """
+dbt:
+  manifest_path: target/manifest.json
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    metadata = load_dbt_source_metadata(_project_config(), targets_path=targets_path)
+
+    assert metadata["stripe.transactions"].owners == ("finance", "data-platform")
+    assert metadata["stripe.transactions"].criticality == "high"
+    assert metadata["stripe.customers"].owners == ("growth",)
+    assert metadata["stripe.customers"].criticality is None
 
 
 def test_resolve_source_names_raises_for_missing_dbt_manifest(tmp_path: Path) -> None:

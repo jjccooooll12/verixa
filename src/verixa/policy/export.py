@@ -29,6 +29,7 @@ def render_diff_result_policy_v1(
             "environment": environment,
             "sources_checked": result.sources_checked,
             "used_baseline": result.used_baseline,
+            "execution_mode": result.execution_mode,
             "estimated_bytes_processed": None
             if estimated_bytes_by_source is None
             else sum(estimated_bytes_by_source.values()),
@@ -43,6 +44,8 @@ def render_diff_result_policy_v1(
             "suppressed_findings": len(active_lifecycle.suppressed_findings),
             "warning_policy_failures": result.warning_policy_failure_count,
             "warning_policy_sources": list(result.warning_policy_sources),
+            "advisory_mode": result.advisory_mode_enabled,
+            "advisory_sources": list(result.advisory_sources),
         },
         "findings": [finding.as_dict() for finding in active_lifecycle.active_findings],
         "resolved_findings": [finding.as_dict() for finding in active_lifecycle.resolved_findings],

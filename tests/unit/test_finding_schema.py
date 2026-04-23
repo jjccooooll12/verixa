@@ -14,12 +14,15 @@ def test_normalize_diff_result_maps_contract_and_baseline_fields() -> None:
                 message="no_nulls violated on amount",
                 column="amount",
                 risks=("likely dashboard undercount",),
+                downstream_models=("stg_orders", "fct_orders"),
             ),
             Finding(
                 source_name="stripe.transactions",
                 severity="warning",
                 code="row_count_changed",
                 message="row count changed",
+                confidence_override="low",
+                confidence_reason="cheap mode relies on metadata counts",
             ),
             Finding(
                 source_name="stripe.transactions",
@@ -44,10 +47,12 @@ def test_normalize_diff_result_maps_contract_and_baseline_fields() -> None:
     assert normalized[0].confidence == "high"
     assert normalized[0].estimated_bytes_processed == 2048
     assert normalized[0].risks == ("likely dashboard undercount",)
+    assert normalized[0].downstream_models == ("stg_orders", "fct_orders")
 
     assert normalized[1].category == "row_count"
     assert normalized[1].change_type == "baseline_drift"
-    assert normalized[1].confidence == "medium"
+    assert normalized[1].confidence == "low"
+    assert normalized[1].confidence_reason == "cheap mode relies on metadata counts"
 
     assert normalized[2].category == "baseline"
     assert normalized[2].change_type == "baseline_missing"

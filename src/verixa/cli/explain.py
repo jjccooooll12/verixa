@@ -57,7 +57,20 @@ def run_explain(config_path: Path, source_name: str) -> dict[str, Any]:
             "column_type": source.scan.column_type,
             "lookback": source.scan.lookback,
         },
-        "check": {"fail_on_warning": source.check.fail_on_warning},
+        "history": None
+        if source.history is None
+        else {
+            "window": source.history.window,
+            "minimum_snapshots": source.history.minimum_snapshots,
+            "row_count": source.history.row_count,
+            "null_rate": source.history.null_rate,
+            "numeric_distribution": source.history.numeric_distribution,
+            "backfill_mode": source.history.backfill_mode,
+        },
+        "check": {
+            "fail_on_warning": source.check.fail_on_warning,
+            "advisory": source.check.advisory,
+        },
         "rules": {
             "null_rate_change": {
                 "warning_delta": source.rules.null_rate_change.warning_delta,

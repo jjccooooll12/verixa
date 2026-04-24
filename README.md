@@ -50,7 +50,7 @@ Implemented now:
 - CI-friendly exit codes
 
 Current local suite status:
-- `175 passed, 2 skipped`
+- `195 passed, 2 skipped`
 
 ## Install
 
@@ -349,6 +349,7 @@ Behavior:
 - `--estimate-bytes` can attach dry-run estimates for the snapshot query shape
 - `--max-bytes-billed` can cap live query cost for the run on BigQuery
 - Snowflake sessions are tagged with command-specific `QUERY_TAG` values such as `verixa:snapshot` and `verixa:diff`
+- JSON output now includes a `warehouse_impact` block when Verixa can observe execution impact safely
 
 ### `verixa diff`
 Requires an existing baseline snapshot and shows likely breakages before deploy, including:
@@ -377,6 +378,7 @@ Behavior:
 - supports `--estimate-bytes`
 - supports `--max-bytes-billed` on BigQuery
 - applies matching suppressions from `verixa.suppressions.yaml` before output and CI failure handling
+- output now distinguishes estimated BigQuery impact from actual Snowflake usage when available
 
 ### `verixa validate`
 Runs contract checks against current live data without comparing to the baseline.
@@ -394,6 +396,7 @@ Behavior:
 - supports `--estimate-bytes`
 - supports `--max-bytes-billed` on BigQuery
 - applies matching suppressions from `verixa.suppressions.yaml`
+- output now distinguishes estimated BigQuery impact from actual Snowflake usage when available
 
 ### `verixa check`
 Runs the CI-friendly validation path.
@@ -413,6 +416,7 @@ Behavior:
 - honors `sources.<name>.check.fail_on_warning: true`
 - applies matching suppressions from `verixa.suppressions.yaml` before evaluating CI failure conditions
 - honors project-level and source-level `check.advisory: true`
+- output now distinguishes estimated BigQuery impact from actual Snowflake usage when available
 
 Exit codes:
 - `0`: success or warnings only
@@ -505,6 +509,7 @@ verixa cost diff
 verixa cost validate --source stripe.transactions
 verixa cost diff --changed-against origin/main
 verixa cost diff --max-bytes-billed 500MB
+verixa cost diff --budget-bytes 1GB
 verixa cost diff --history-window 30m
 verixa cost check --format json
 ```
@@ -546,9 +551,19 @@ Behavior:
 - `--changed-file` accepts one or more repo-relative paths
 - `--changed-against <ref>` uses `git diff <ref>...HEAD`
 - manual path mappings and dbt manifest lineage are combined when both are configured
-- dbt manifest targeting can map changed models or macros back to upstream Verixa sources
+- dbt manifest targeting can map changed models, schema YAML patches, source definitions, and macros back to upstream Verixa sources
 - unmatched changed files fall back to all configured sources
 - missing `verixa.targets.yaml` is an error only when changed-file targeting is requested
+- diff-like JSON, policy, and GitHub-markdown output include a `source_selection` block with stable reason codes and confidence metadata
+
+Current selection reason codes:
+- `explicit_source`
+- `matched_path_rule`
+- `matched_dbt_model_dependency`
+- `matched_dbt_macro_dependency`
+- `matched_dbt_source_definition`
+- `matched_dbt_seed_dependency`
+- `fallback_all_sources`
 
 Examples:
 
@@ -579,6 +594,12 @@ verixa diff --format json
 verixa check --fail-on-error --format json
 ```
 
+Diff-like JSON and `policy-v1` output now include:
+- `source_selection`
+- `warehouse_impact`
+
+`source_selection` explains why a source was selected for the run, including changed files, stable reason codes, and confidence.
+
 ### Suppressions
 Suppressions live outside the main config in `verixa.suppressions.yaml`.
 
@@ -598,6 +619,39 @@ Behavior:
 - suppressions do not modify baselines
 - expired suppressions are ignored by `diff` and `check`
 - expired suppressions are surfaced by `verixa doctor`
+
+### Extensions
+Verixa supports a narrow, typed extension surface for custom checks and metadata enrichment.
+
+Current extension hook types:
+- `extensions.checks`
+- `extensions.finding_enrichers`
+- `extensions.source_metadata_enrichers`
+
+Import syntax:
+
+```yaml
+extensions:
+  checks:
+    - my_package.verixa_hooks:custom_check
+  finding_enrichers:
+    - my_package.verixa_hooks:finding_enricher
+  source_metadata_enrichers:
+    - my_package.verixa_hooks:source_metadata_enricher
+```
+
+Behavior:
+- hook imports use `module:attribute` syntax
+- custom checks run once per selected source on both `validate` and `diff`
+- custom checks receive current snapshot state plus optional baseline and history context
+- finding enrichers run after built-in risk attachment and severity/confidence handling
+- source metadata enrichers can backfill owners, criticality, downstream models, and extra risk hints
+- explicit `verixa.risk.yaml` values remain authoritative; extension metadata only augments missing data
+- hook failures are treated as runtime errors and fail the command cleanly
+
+Current scope:
+- custom renderer and output-adapter hooks are still intentionally built-in only
+- if you need a policy or PR integration, use `--format json`, `--format github-markdown`, `--format github-annotations`, or `--format policy-v1`
 
 ### Policy Engines
 Verixa can act as the data-aware signal generator for external policy engines.
@@ -677,6 +731,8 @@ Current behavior:
 - bounded and cheap modes annotate affected findings with explicit confidence notes so reviewers can see when a result came from a partial-cost execution path
 - history-aware drift uses deterministic rolling median bands from recent stored snapshots instead of a single baseline when enabled per source
 - `verixa cost` and `--estimate-bytes` use BigQuery dry runs to estimate query cost
+- `verixa cost --budget-bytes` previews the cheapest set of BigQuery sources that fit within a CI budget
+- diff-like JSON, policy, and reviewer-facing outputs now expose a `warehouse_impact` summary when Verixa can report either estimated or actual usage
 - `warehouse.max_bytes_billed` and `--max-bytes-billed` can hard-stop live queries that would exceed a configured ceiling
 - Snowflake does not yet expose pre-run byte estimation or max-bytes-billed enforcement through Verixa
 - `verixa cost --history-window` reports recent Snowflake query usage from `INFORMATION_SCHEMA.QUERY_HISTORY`

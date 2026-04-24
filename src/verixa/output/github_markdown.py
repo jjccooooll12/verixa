@@ -7,6 +7,8 @@ from collections import defaultdict
 from verixa.diff.models import DiffResult
 from verixa.findings.schema import NormalizedFinding, normalize_diff_result
 from verixa.history.classifier import LifecycleReport, classify_finding_lifecycle
+from verixa.runtime_impact import RuntimeImpact
+from verixa.targeting import SourceSelectionReport
 
 
 def render_diff_result_github_markdown(
@@ -14,6 +16,8 @@ def render_diff_result_github_markdown(
     title: str,
     estimated_bytes_by_source: dict[str, int] | None = None,
     lifecycle_report: LifecycleReport | None = None,
+    source_selection: SourceSelectionReport | None = None,
+    runtime_impact: RuntimeImpact | None = None,
 ) -> str:
     """Render grouped reviewer-friendly markdown for pull request summaries."""
 
@@ -41,6 +45,10 @@ def render_diff_result_github_markdown(
         lines.append(
             f"**Estimated scan:** {_format_bytes(sum(estimated_bytes_by_source.values()))}"
         )
+    if source_selection is not None:
+        lines.extend(_render_source_selection(source_selection))
+    if runtime_impact is not None:
+        lines.append(_render_runtime_impact(runtime_impact))
     downstream_impact = _collect_downstream_impact(lifecycle.active_findings)
     if downstream_impact:
         lines.append("**Potential downstream impact:**")
@@ -171,3 +179,51 @@ def _format_optional_number(value: float | None) -> str:
         return "n/a"
     formatted = f"{value:.4f}"
     return formatted.rstrip("0").rstrip(".")
+
+
+def _render_runtime_impact(runtime_impact: RuntimeImpact) -> str:
+    if runtime_impact.mode == "estimated":
+        return (
+            "**Warehouse impact:** estimated "
+            f"{_format_bytes(runtime_impact.estimated_total_bytes)} "
+            f"across {len(runtime_impact.estimated_bytes_by_source)} source(s)"
+        )
+    return (
+        "**Warehouse impact:** actual "
+        f"{runtime_impact.actual_query_count} query(s), "
+        f"{_format_bytes(runtime_impact.actual_total_bytes_scanned)} scanned, "
+        f"{_format_bytes(runtime_impact.actual_total_bytes_written)} written, "
+        f"{runtime_impact.actual_total_elapsed_ms}ms elapsed"
+    )
+
+
+def _render_source_selection(source_selection: SourceSelectionReport) -> list[str]:
+    if source_selection.mode == "all_sources":
+        return ["**Target selection:** all configured sources"]
+    if source_selection.mode == "explicit_sources":
+        return [
+            "**Target selection:** explicit sources "
+            + ", ".join(f"`{name}`" for name in source_selection.selected_sources)
+        ]
+    lines = [
+        (
+            "**Target selection:** "
+            + (
+                "fallback to all configured sources"
+                if source_selection.mode == "fallback_all_sources"
+                else f"targeted {len(source_selection.selected_sources)} source(s)"
+            )
+            + f" with `{source_selection.confidence}` confidence"
+        )
+    ]
+    reasons_by_source = source_selection.reasons_by_source or {}
+    for source_name in source_selection.selected_sources:
+        reasons = reasons_by_source.get(source_name)
+        if not reasons:
+            continue
+        rendered = ", ".join(
+            f"`{reason.code}`" + (f" ({', '.join(reason.matched_files)})" if reason.matched_files else "")
+            for reason in reasons
+        )
+        lines.append(f"- `{source_name}`: {rendered}")
+    return lines

@@ -45,11 +45,17 @@ from verixa.output.json import (
     render_snapshot_summary_json,
 )
 from verixa.policy.export import render_diff_result_policy_v1
+from verixa.extensions.api import ExtensionError
+from verixa.runtime_impact import RuntimeImpact, RuntimeImpactRecord
 from verixa.snapshot.models import ProjectSnapshot
 from verixa.storage.filesystem import StorageError
 from verixa.suppressions import SuppressionError, apply_suppressions, load_suppressions
 from verixa.suppressions.loader import split_active_and_expired
-from verixa.targeting import resolve_source_names as _resolve_source_names_impl
+from verixa.targeting import (
+    SourceSelectionReport,
+    resolve_source_names as _resolve_source_names_impl,
+    resolve_source_selection as _resolve_source_selection_impl,
+)
 
 
 class BasicOutputFormat(str, Enum):
@@ -103,6 +109,7 @@ class AppDeps:
     run_cost: Callable[..., CostReport]
     estimate_bytes: Callable[..., dict[str, int]]
     resolve_source_names: Callable[..., tuple[str, ...]]
+    resolve_source_selection: Callable[..., SourceSelectionReport] | None = None
 
 
 def _estimate_bytes_impl(
@@ -137,6 +144,7 @@ DEFAULT_APP_DEPS = AppDeps(
     run_cost=_run_cost_impl,
     estimate_bytes=_estimate_bytes_impl,
     resolve_source_names=_resolve_source_names_impl,
+    resolve_source_selection=_resolve_source_selection_impl,
 )
 
 
@@ -221,7 +229,7 @@ def create_app(deps: AppDeps | None = None) -> typer.Typer:
         """Capture the current source baseline and store it locally."""
 
         try:
-            selected_sources = _resolve_cli_source_names(
+            selection_report = _resolve_cli_source_selection(
                 deps=active_deps,
                 config_path=config,
                 explicit_sources=tuple(source or ()),
@@ -230,6 +238,7 @@ def create_app(deps: AppDeps | None = None) -> typer.Typer:
                 targets_path=targets_config,
                 output=output,
             )
+            selected_sources = selection_report.runner_source_names
             parsed_max_bytes_billed = _parse_max_bytes_billed(max_bytes_billed)
             estimates = (
                 _call_with_supported_kwargs(
@@ -250,7 +259,23 @@ def create_app(deps: AppDeps | None = None) -> typer.Typer:
                 max_bytes_billed=parsed_max_bytes_billed,
                 execution_mode=execution_mode.value,
             )
-            typer.echo(_render_snapshot_output(snapshot, baseline_path, output, estimates))
+            typer.echo(
+                _render_snapshot_output(
+                    snapshot,
+                    baseline_path,
+                    output,
+                    estimates,
+                    source_selection=selection_report,
+                    runtime_impact=_resolve_runtime_impact(
+                        deps=active_deps,
+                        config_path=config,
+                        command_name="snapshot",
+                        source_names=selected_sources,
+                        estimated_bytes_by_source=estimates,
+                        execution_mode=execution_mode.value,
+                    ),
+                )
+            )
         except (ConfigError, ConnectorError, StorageError, ValueError) as exc:
             _exit_with_error(str(exc), output)
 
@@ -621,7 +646,7 @@ def create_app(deps: AppDeps | None = None) -> typer.Typer:
         """Run the CI-friendly validation path."""
 
         try:
-            selected_sources = _resolve_cli_source_names(
+            selection_report = _resolve_cli_source_selection(
                 deps=active_deps,
                 config_path=config,
                 explicit_sources=tuple(source or ()),
@@ -630,6 +655,7 @@ def create_app(deps: AppDeps | None = None) -> typer.Typer:
                 targets_path=targets_config,
                 output=output,
             )
+            selected_sources = selection_report.runner_source_names
             parsed_max_bytes_billed = _parse_max_bytes_billed(max_bytes_billed)
             estimates = (
                 _call_with_supported_kwargs(
@@ -678,9 +704,18 @@ def create_app(deps: AppDeps | None = None) -> typer.Typer:
                     estimates,
                     filtered_lifecycle,
                     environment=environment,
+                    source_selection=selection_report,
+                    runtime_impact=_resolve_runtime_impact(
+                        deps=active_deps,
+                        config_path=config,
+                        command_name="check",
+                        source_names=selected_sources,
+                        estimated_bytes_by_source=estimates,
+                        execution_mode=execution_mode.value,
+                    ),
                 )
             )
-        except (ConfigError, ConnectorError, StorageError, SuppressionError, ValueError) as exc:
+        except (ConfigError, ConnectorError, StorageError, SuppressionError, ExtensionError, ValueError) as exc:
             _exit_with_error(str(exc), output)
 
         effective_advisory = advisory or filtered_result.advisory_mode_enabled
@@ -838,6 +873,11 @@ def create_app(deps: AppDeps | None = None) -> typer.Typer:
             "--max-bytes-billed",
             help="Compare estimates against a byte ceiling. Accepts values like 500MB or 1GB.",
         ),
+        budget_bytes: str | None = typer.Option(
+            None,
+            "--budget-bytes",
+            help="For BigQuery estimate mode, preview the cheapest set of sources that fit within this total byte budget.",
+        ),
         history_window: str | None = typer.Option(
             None,
             "--history-window",
@@ -853,7 +893,7 @@ def create_app(deps: AppDeps | None = None) -> typer.Typer:
         """Estimate BigQuery bytes or report recent Snowflake usage for one workflow step."""
 
         try:
-            selected_sources = _resolve_cli_source_names(
+            selection_report = _resolve_cli_source_selection(
                 deps=active_deps,
                 config_path=config,
                 explicit_sources=tuple(source or ()),
@@ -862,12 +902,14 @@ def create_app(deps: AppDeps | None = None) -> typer.Typer:
                 targets_path=targets_config,
                 output=output,
             )
+            selected_sources = selection_report.runner_source_names
             report = _call_with_supported_kwargs(
                 active_deps.run_cost,
                 config,
                 command=command,
                 source_names=selected_sources,
                 max_bytes_billed=_parse_max_bytes_billed(max_bytes_billed),
+                budget_bytes=_parse_max_bytes_billed(budget_bytes),
                 history_window_seconds=_parse_history_window(history_window),
                 execution_mode=execution_mode.value,
             )
@@ -895,7 +937,7 @@ def _run_diff_like_command(
     max_bytes_billed: str | None,
 ) -> None:
     try:
-        selected_sources = _resolve_cli_source_names(
+        selection_report = _resolve_cli_source_selection(
             deps=deps,
             config_path=config,
             explicit_sources=tuple(source or ()),
@@ -904,6 +946,7 @@ def _run_diff_like_command(
             targets_path=targets_config,
             output=output,
         )
+        selected_sources = selection_report.runner_source_names
         parsed_max_bytes_billed = _parse_max_bytes_billed(max_bytes_billed)
         estimates = (
             _call_with_supported_kwargs(
@@ -946,9 +989,18 @@ def _run_diff_like_command(
                 estimates,
                 filtered_lifecycle,
                 environment=environment,
+                source_selection=selection_report,
+                runtime_impact=_resolve_runtime_impact(
+                    deps=deps,
+                    config_path=config,
+                    command_name=command_name,
+                    source_names=selected_sources,
+                    estimated_bytes_by_source=estimates,
+                    execution_mode=execution_mode.value,
+                ),
             )
         )
-    except (ConfigError, ConnectorError, StorageError, SuppressionError, ValueError) as exc:
+    except (ConfigError, ConnectorError, StorageError, SuppressionError, ExtensionError, ValueError) as exc:
         _exit_with_error(str(exc), output)
 
 
@@ -968,7 +1020,7 @@ def _run_validate_like_command(
     max_bytes_billed: str | None,
 ) -> None:
     try:
-        selected_sources = _resolve_cli_source_names(
+        selection_report = _resolve_cli_source_selection(
             deps=deps,
             config_path=config,
             explicit_sources=tuple(source or ()),
@@ -977,6 +1029,7 @@ def _run_validate_like_command(
             targets_path=targets_config,
             output=output,
         )
+        selected_sources = selection_report.runner_source_names
         parsed_max_bytes_billed = _parse_max_bytes_billed(max_bytes_billed)
         estimates = (
             _call_with_supported_kwargs(
@@ -1018,14 +1071,23 @@ def _run_validate_like_command(
                 estimates,
                 filtered_lifecycle,
                 environment=None,
+                source_selection=selection_report,
+                runtime_impact=_resolve_runtime_impact(
+                    deps=deps,
+                    config_path=config,
+                    command_name=command_name,
+                    source_names=selected_sources,
+                    estimated_bytes_by_source=estimates,
+                    execution_mode=execution_mode.value,
+                ),
             )
         )
-    except (ConfigError, ConnectorError, StorageError, SuppressionError, ValueError) as exc:
+    except (ConfigError, ConnectorError, StorageError, SuppressionError, ExtensionError, ValueError) as exc:
         _exit_with_error(str(exc), output)
 
 
 
-def _resolve_cli_source_names(
+def _resolve_cli_source_selection(
     *,
     deps: AppDeps,
     config_path: Path,
@@ -1034,14 +1096,51 @@ def _resolve_cli_source_names(
     changed_against: str | None,
     targets_path: Path | None,
     output: BasicOutputFormat | FindingOutputFormat,
-) -> tuple[str, ...]:
+) -> SourceSelectionReport:
     try:
-        return deps.resolve_source_names(
+        if (
+            deps.resolve_source_selection is not None
+            and not (
+                deps.resolve_source_selection is _resolve_source_selection_impl
+                and deps.resolve_source_names is not _resolve_source_names_impl
+            )
+        ):
+            return deps.resolve_source_selection(
+                config_path,
+                explicit_source_names=explicit_sources,
+                changed_files=changed_files,
+                changed_against=changed_against,
+                targets_path=targets_path,
+            )
+
+        resolved = deps.resolve_source_names(
             config_path,
             explicit_source_names=explicit_sources,
             changed_files=changed_files,
             changed_against=changed_against,
             targets_path=targets_path,
+        )
+        if explicit_sources:
+            return SourceSelectionReport(
+                mode="explicit_sources",
+                confidence="high",
+                runner_source_names=resolved,
+                selected_sources=resolved,
+            )
+        if changed_files or changed_against is not None:
+            return SourceSelectionReport(
+                mode="targeted_sources" if resolved else "fallback_all_sources",
+                confidence="medium" if resolved else "low",
+                runner_source_names=resolved,
+                selected_sources=resolved,
+                changed_files=changed_files,
+                targets_path=targets_path,
+            )
+        return SourceSelectionReport(
+            mode="all_sources",
+            confidence="high",
+            runner_source_names=resolved,
+            selected_sources=resolved,
         )
     except (ConfigError, ConnectorError, StorageError, ValueError) as exc:
         _exit_with_error(str(exc), output)
@@ -1072,10 +1171,24 @@ def _render_snapshot_output(
     baseline_path: Path,
     output: BasicOutputFormat,
     estimated_bytes_by_source: dict[str, int] | None = None,
+    source_selection: SourceSelectionReport | None = None,
+    runtime_impact: RuntimeImpact | None = None,
 ) -> str:
     if output == BasicOutputFormat.JSON:
-        return render_snapshot_summary_json(snapshot, baseline_path, estimated_bytes_by_source)
-    return render_snapshot_summary(snapshot, baseline_path, estimated_bytes_by_source)
+        return render_snapshot_summary_json(
+            snapshot,
+            baseline_path,
+            estimated_bytes_by_source,
+            source_selection=source_selection,
+            runtime_impact=runtime_impact,
+        )
+    return render_snapshot_summary(
+        snapshot,
+        baseline_path,
+        estimated_bytes_by_source,
+        source_selection=source_selection,
+        runtime_impact=runtime_impact,
+    )
 
 
 def _render_diff_output(
@@ -1085,6 +1198,8 @@ def _render_diff_output(
     estimated_bytes_by_source: dict[str, int] | None = None,
     lifecycle_report: LifecycleReport | None = None,
     environment: str | None = None,
+    source_selection: SourceSelectionReport | None = None,
+    runtime_impact: RuntimeImpact | None = None,
 ) -> str:
     if output == FindingOutputFormat.JSON:
         return render_diff_result_json(
@@ -1093,6 +1208,8 @@ def _render_diff_output(
             estimated_bytes_by_source,
             lifecycle_report=lifecycle_report,
             environment=environment,
+            source_selection=source_selection,
+            runtime_impact=runtime_impact,
         )
     if output == FindingOutputFormat.POLICY_V1:
         return render_diff_result_policy_v1(
@@ -1101,6 +1218,8 @@ def _render_diff_output(
             estimated_bytes_by_source,
             lifecycle_report=lifecycle_report,
             environment=environment,
+            source_selection=source_selection,
+            runtime_impact=runtime_impact,
         )
     if output == FindingOutputFormat.GITHUB_MARKDOWN:
         return render_diff_result_github_markdown(
@@ -1108,6 +1227,8 @@ def _render_diff_output(
             title,
             estimated_bytes_by_source,
             lifecycle_report=lifecycle_report,
+            source_selection=source_selection,
+            runtime_impact=runtime_impact,
         )
     if output == FindingOutputFormat.GITHUB_ANNOTATIONS:
         return render_diff_result_github_annotations(
@@ -1121,6 +1242,8 @@ def _render_diff_output(
         title=title,
         estimated_bytes_by_source=estimated_bytes_by_source,
         lifecycle_report=lifecycle_report,
+        source_selection=source_selection,
+        runtime_impact=runtime_impact,
     )
 
 
@@ -1150,6 +1273,59 @@ def _build_lifecycle_report(
         return lifecycle
     except HistoryStoreError:
         return None
+
+
+def _resolve_runtime_impact(
+    *,
+    deps: AppDeps,
+    config_path: Path,
+    command_name: str,
+    source_names: tuple[str, ...],
+    estimated_bytes_by_source: dict[str, int] | None,
+    execution_mode: str,
+) -> RuntimeImpact | None:
+    if estimated_bytes_by_source is not None:
+        return RuntimeImpact(
+            warehouse_kind="bigquery",
+            mode="estimated",
+            execution_mode=execution_mode,
+            estimated_bytes_by_source=dict(estimated_bytes_by_source),
+        )
+
+    try:
+        report = _call_with_supported_kwargs(
+            deps.run_cost,
+            config_path,
+            command=command_name,
+            source_names=source_names,
+            execution_mode=execution_mode,
+            mode="history",
+        )
+    except (ConfigError, ConnectorError, StorageError, ValueError):
+        return None
+
+    if report.mode != "history":
+        return None
+
+    return RuntimeImpact(
+        warehouse_kind="snowflake",
+        mode="actual",
+        execution_mode=execution_mode,
+        query_tag=report.query_tag,
+        actual_records=tuple(
+            RuntimeImpactRecord(
+                query_id=record.query_id,
+                query_tag=record.query_tag,
+                warehouse_name=record.warehouse_name,
+                start_time=record.start_time,
+                total_elapsed_ms=record.total_elapsed_ms,
+                bytes_scanned=record.bytes_scanned,
+                bytes_written=record.bytes_written,
+                rows_produced=record.rows_produced,
+            )
+            for record in report.usage_records
+        ),
+    )
 
 
 def _apply_cli_suppressions(
@@ -1551,8 +1727,11 @@ def _render_cost_output(report: CostReport, output: BasicOutputFormat) -> str:
             "sources_estimated": len(report.estimates),
             "total_bytes_processed": report.total_bytes,
             "max_bytes_billed": report.max_bytes_billed,
+            "budget_bytes": report.budget_bytes,
             "has_over_limit_sources": bool(report.over_limit_sources),
             "over_limit_sources": list(report.over_limit_sources),
+            "selected_sources": list(report.selected_sources),
+            "skipped_sources": list(report.skipped_sources),
         },
         "sources": [
             {
@@ -1561,6 +1740,7 @@ def _render_cost_output(report: CostReport, output: BasicOutputFormat) -> str:
                 "over_max_bytes_billed": (
                     report.max_bytes_billed is not None and bytes_processed > report.max_bytes_billed
                 ),
+                "selected_under_budget": source_name in report.selected_sources if report.budget_bytes is not None else None,
             }
             for source_name, bytes_processed in sorted(report.estimates.items())
         ],
@@ -1573,12 +1753,28 @@ def _render_cost_output(report: CostReport, output: BasicOutputFormat) -> str:
         suffix = ""
         if report.max_bytes_billed is not None and bytes_processed > report.max_bytes_billed:
             suffix = " (over limit)"
+        elif report.budget_bytes is not None:
+            suffix = (
+                " (selected)"
+                if source_name in report.selected_sources
+                else " (skipped by budget)"
+            )
         lines.append(f"- {source_name}: {_format_bytes(bytes_processed)}{suffix}")
     lines.append(f"Total: {_format_bytes(report.total_bytes)}")
     if report.max_bytes_billed is None:
         lines.append("Max bytes billed: none")
     else:
         lines.append(f"Max bytes billed: {_format_bytes(report.max_bytes_billed)}")
+    if report.budget_bytes is None:
+        lines.append("Budget: none")
+    else:
+        lines.append(f"Budget: {_format_bytes(report.budget_bytes)}")
+        if report.selected_sources:
+            lines.append(f"Selected under budget: {', '.join(report.selected_sources)}")
+        else:
+            lines.append("Selected under budget: none")
+        if report.skipped_sources:
+            lines.append(f"Skipped under budget: {', '.join(report.skipped_sources)}")
     if report.over_limit_sources:
         lines.append(f"Would exceed limit: {', '.join(report.over_limit_sources)}")
     return "\n".join(lines)

@@ -12,6 +12,7 @@ from verixa.contracts.models import (
     AcceptedValuesTest,
     BaselineConfig,
     CheckConfig,
+    ExtensionsConfig,
     FreshnessConfig,
     HistoryDriftConfig,
     NumericDistributionChangeThresholds,
@@ -26,6 +27,7 @@ from verixa.contracts.models import (
     TestDefinition,
     WarehouseConfig,
 )
+from verixa.extensions.loader import load_extensions
 from verixa.contracts.normalize import (
     NormalizationError,
     parse_byte_size,
@@ -63,6 +65,7 @@ def load_config(
         rules = _parse_rules(raw_data.get("rules"))
         baseline = _parse_baseline(raw_data.get("baseline"))
         check = _parse_check(raw_data.get("check"))
+        extensions = _parse_extensions(raw_data.get("extensions"))
         sources = _parse_sources(
             raw_data.get("sources"),
             default_rules=rules,
@@ -77,6 +80,7 @@ def load_config(
         rules=rules,
         baseline=baseline,
         check=check,
+        extensions=extensions,
     )
     return _select_sources(config, source_names=source_names)
 
@@ -293,6 +297,10 @@ def _parse_check(
         raise NormalizationError(f"{prefix}.advisory must be true or false.")
 
     return CheckConfig(fail_on_warning=fail_on_warning, advisory=advisory)
+
+
+def _parse_extensions(raw_extensions: Any) -> ExtensionsConfig:
+    return load_extensions(raw_extensions)
 
 
 def _parse_history(
@@ -688,4 +696,5 @@ def _select_sources(config: ProjectConfig, source_names: tuple[str, ...]) -> Pro
         rules=config.rules,
         baseline=config.baseline,
         check=config.check,
+        extensions=config.extensions,
     )

@@ -5,6 +5,11 @@ from __future__ import annotations
 from verixa.contracts.models import BaselineConfig, ProjectConfig, SourceContract
 from verixa.diff.models import DiffResult, Finding
 from verixa.diff.risk import RiskConfig, SourceRiskHints
+from verixa.extensions.api import (
+    CustomCheckContext,
+    ExtensionError,
+    FindingEnrichmentContext,
+)
 from verixa.findings.schema import stable_code_for_internal
 from verixa.rules.accepted_values import check_accepted_values
 from verixa.rules.freshness import check_freshness
@@ -38,6 +43,17 @@ def build_test_result(
         findings.extend(check_no_nulls(contract, current))
         findings.extend(check_freshness(contract, current))
         findings.extend(check_accepted_values(contract, current))
+        findings.extend(
+            _run_custom_checks(
+                config,
+                contract,
+                current=current,
+                baseline=None,
+                historical=(),
+                execution_mode=execution_mode,
+                used_baseline=False,
+            )
+        )
     return _finalize(
         findings,
         config=config,
@@ -80,6 +96,17 @@ def build_plan_result(
         findings.extend(check_accepted_values(contract, current))
 
         if baseline is None:
+            findings.extend(
+                _run_custom_checks(
+                    config,
+                    contract,
+                    current=current,
+                    baseline=None,
+                    historical=source_history,
+                    execution_mode=execution_mode,
+                    used_baseline=True,
+                )
+            )
             findings.append(
                 Finding(
                     source_name=source_name,
@@ -178,6 +205,17 @@ def build_plan_result(
                     thresholds=contract.rules.numeric_distribution_change,
                 )
             )
+        findings.extend(
+            _run_custom_checks(
+                config,
+                contract,
+                current=current,
+                baseline=baseline,
+                historical=source_history,
+                execution_mode=execution_mode,
+                used_baseline=True,
+            )
+        )
 
     return _finalize(
         findings,
@@ -199,12 +237,17 @@ def _finalize(
     execution_mode: str,
 ) -> DiffResult:
     enriched = [
-        _apply_confidence_metadata(
-            _apply_severity_override(
-                _attach_risks(finding, risk_config),
+        _apply_custom_finding_enrichers(
+            _apply_confidence_metadata(
+                _apply_severity_override(
+                    _attach_risks(finding, risk_config),
+                    config,
+                ),
                 config,
+                execution_mode=execution_mode,
             ),
             config,
+            used_baseline=used_baseline,
             execution_mode=execution_mode,
         )
         for finding in findings
@@ -334,6 +377,73 @@ def _apply_confidence_metadata(
         history_lower_bound=finding.history_lower_bound,
         history_upper_bound=finding.history_upper_bound,
     )
+
+
+def _run_custom_checks(
+    config: ProjectConfig,
+    contract: SourceContract,
+    *,
+    current: SourceSnapshot,
+    baseline: SourceSnapshot | None,
+    historical: tuple[SourceSnapshot, ...],
+    execution_mode: str,
+    used_baseline: bool,
+) -> tuple[Finding, ...]:
+    findings: list[Finding] = []
+    context = CustomCheckContext(
+        config=config,
+        contract=contract,
+        current=current,
+        baseline=baseline,
+        historical=historical,
+        execution_mode=execution_mode,
+        used_baseline=used_baseline,
+    )
+    for hook in config.extensions.checks:
+        try:
+            hook_findings = hook(context)
+        except Exception as exc:  # pragma: no cover - hook-specific failures are environment specific
+            raise ExtensionError(
+                f"Custom check hook '{_hook_name(hook)}' failed for source '{contract.name}': {exc}"
+            ) from exc
+        if not isinstance(hook_findings, tuple):
+            raise ExtensionError(
+                f"Custom check hook '{_hook_name(hook)}' must return a tuple[Finding, ...]."
+            )
+        for finding in hook_findings:
+            if not isinstance(finding, Finding):
+                raise ExtensionError(
+                    f"Custom check hook '{_hook_name(hook)}' returned a non-Finding value."
+                )
+            findings.append(finding)
+    return tuple(findings)
+
+
+def _apply_custom_finding_enrichers(
+    finding: Finding,
+    config: ProjectConfig,
+    *,
+    used_baseline: bool,
+    execution_mode: str,
+) -> Finding:
+    enriched = finding
+    context = FindingEnrichmentContext(
+        config=config,
+        used_baseline=used_baseline,
+        execution_mode=execution_mode,
+    )
+    for hook in config.extensions.finding_enrichers:
+        try:
+            enriched = hook(enriched, context)
+        except Exception as exc:  # pragma: no cover - hook-specific failures are environment specific
+            raise ExtensionError(
+                f"Finding enricher hook '{_hook_name(hook)}' failed for source '{finding.source_name}': {exc}"
+            ) from exc
+        if not isinstance(enriched, Finding):
+            raise ExtensionError(
+                f"Finding enricher hook '{_hook_name(hook)}' must return a Finding."
+            )
+    return enriched
 
 
 def _finding_sort_key(finding: Finding) -> tuple[str, int, str, str]:
@@ -471,3 +581,10 @@ def _downgrade_confidence(confidence: str) -> str:
     if confidence == "medium":
         return "low"
     return "low"
+
+
+def _hook_name(hook: object) -> str:
+    hook_type = type(hook)
+    module = getattr(hook, "__module__", hook_type.__module__)
+    qualname = getattr(hook, "__qualname__", hook_type.__qualname__)
+    return f"{module}.{qualname}"

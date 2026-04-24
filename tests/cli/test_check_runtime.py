@@ -3,6 +3,7 @@ from __future__ import annotations
 from typer.testing import CliRunner
 
 from tests.cli.support import build_app
+from verixa.extensions.api import ExtensionError
 from verixa.storage.filesystem import StorageError
 
 
@@ -31,3 +32,16 @@ def test_check_command_can_emit_json_runtime_errors() -> None:
     assert result.exit_code == 2
     assert '"message": "baseline missing"' in result.stderr
     assert '"exit_code": 2' in result.stderr
+
+
+def test_check_command_returns_runtime_error_when_extension_hook_fails() -> None:
+    runner = CliRunner()
+
+    def _raise_extension_error(config, risk_path=None, source_names=(), environment=None, max_bytes_billed=None):  # noqa: ANN001
+        raise ExtensionError("extension hook failed")
+
+    app = build_app(run_check=_raise_extension_error)
+    result = runner.invoke(app, ["check", "--fail-on-error"])
+
+    assert result.exit_code == 2
+    assert "Error: extension hook failed" in result.stderr

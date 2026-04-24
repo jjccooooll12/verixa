@@ -7,6 +7,7 @@ import json
 from pathlib import Path, PurePosixPath
 import subprocess
 from typing import Any, Callable
+from typing import Literal
 
 import yaml
 
@@ -31,6 +32,47 @@ class DbtSourceMetadata:
 
     owners: tuple[str, ...] = ()
     criticality: str | None = None
+
+
+SelectionMode = Literal[
+    "all_sources",
+    "explicit_sources",
+    "targeted_sources",
+    "fallback_all_sources",
+]
+SelectionConfidence = Literal["high", "medium", "low"]
+SelectionReasonCode = Literal[
+    "explicit_source",
+    "matched_path_rule",
+    "matched_dbt_model_dependency",
+    "matched_dbt_macro_dependency",
+    "matched_dbt_source_definition",
+    "matched_dbt_seed_dependency",
+    "fallback_all_sources",
+]
+
+
+@dataclass(frozen=True, slots=True)
+class SourceSelectionReason:
+    """One reason why Verixa selected a source for this run."""
+
+    code: SelectionReasonCode
+    confidence: SelectionConfidence
+    matched_files: tuple[str, ...] = ()
+    detail: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SourceSelectionReport:
+    """Resolved source selection plus reasons and confidence."""
+
+    mode: SelectionMode
+    confidence: SelectionConfidence
+    runner_source_names: tuple[str, ...]
+    selected_sources: tuple[str, ...]
+    changed_files: tuple[str, ...] = ()
+    targets_path: Path | None = None
+    reasons_by_source: dict[str, tuple[SourceSelectionReason, ...]] | None = None
 
 
 ConfigLoader = Callable[[Path | None], ProjectConfig]
@@ -96,16 +138,61 @@ def resolve_source_names(
     sources.
     """
 
+    return resolve_source_selection(
+        config_path,
+        explicit_source_names=explicit_source_names,
+        changed_files=changed_files,
+        changed_against=changed_against,
+        targets_path=targets_path,
+        config_loader=config_loader,
+        targets_loader=targets_loader,
+        changed_file_provider=changed_file_provider,
+    ).runner_source_names
+
+
+def resolve_source_selection(
+    config_path: Path,
+    *,
+    explicit_source_names: tuple[str, ...] = (),
+    changed_files: tuple[str, ...] = (),
+    changed_against: str | None = None,
+    targets_path: Path | None = None,
+    config_loader: ConfigLoader = load_config,
+    targets_loader: TargetsLoader = load_targets_config,
+    changed_file_provider: ChangedFileProvider | None = None,
+) -> SourceSelectionReport:
+    """Resolve source selection plus reasons and confidence metadata."""
+
     explicit = tuple(dict.fromkeys(explicit_source_names))
     if explicit:
-        return explicit
+        reasons = {
+            source_name: (
+                SourceSelectionReason(
+                    code="explicit_source",
+                    confidence="high",
+                    detail="selected explicitly with --source",
+                ),
+            )
+            for source_name in explicit
+        }
+        return SourceSelectionReport(
+            mode="explicit_sources",
+            confidence="high",
+            runner_source_names=explicit,
+            selected_sources=explicit,
+            reasons_by_source=reasons,
+        )
 
     requested_changed_files = tuple(dict.fromkeys(changed_files))
     if not requested_changed_files and changed_against is None:
-        return ()
+        return SourceSelectionReport(
+            mode="all_sources",
+            confidence="high",
+            runner_source_names=(),
+            selected_sources=(),
+        )
 
     active_changed_file_provider = changed_file_provider or list_changed_files_against
-
     config = config_loader(config_path)
     targets_config = targets_loader(targets_path)
     resolved_targets_path = resolve_targets_path(targets_path)
@@ -123,27 +210,73 @@ def resolve_source_names(
 
     candidate_files = _normalize_changed_files((*requested_changed_files, *discovered_changed_files))
     if not candidate_files:
-        return ()
+        return SourceSelectionReport(
+            mode="fallback_all_sources",
+            confidence="low",
+            runner_source_names=(),
+            selected_sources=tuple(config.sources),
+            changed_files=(),
+            targets_path=resolved_targets_path,
+            reasons_by_source={
+                source_name: (
+                    SourceSelectionReason(
+                        code="fallback_all_sources",
+                        confidence="low",
+                        detail="no changed files resolved; falling back to all configured sources",
+                    ),
+                )
+                for source_name in config.sources
+            },
+        )
 
-    matched_sources = _match_source_names(
+    path_reasons = _match_path_selection_reasons(
         changed_files=candidate_files,
         targets_config=targets_config,
         available_source_names=tuple(config.sources),
     )
-    if targets_config.dbt_manifest_path is None:
-        return matched_sources
-
-    dbt_matches = _match_dbt_source_names(
-        changed_files=candidate_files,
-        manifest_path=targets_config.dbt_manifest_path,
-        config=config,
+    dbt_reasons = (
+        {}
+        if targets_config.dbt_manifest_path is None
+        else _match_dbt_selection_reasons(
+            changed_files=candidate_files,
+            manifest_path=targets_config.dbt_manifest_path,
+            config=config,
+        )
     )
-    if not matched_sources:
-        return dbt_matches
+    merged_reasons = _merge_selection_reasons(path_reasons, dbt_reasons)
+    if not merged_reasons:
+        return SourceSelectionReport(
+            mode="fallback_all_sources",
+            confidence="low",
+            runner_source_names=(),
+            selected_sources=tuple(config.sources),
+            changed_files=candidate_files,
+            targets_path=resolved_targets_path,
+            reasons_by_source={
+                source_name: (
+                    SourceSelectionReason(
+                        code="fallback_all_sources",
+                        confidence="low",
+                        matched_files=candidate_files,
+                        detail="no path or dbt mapping matched; falling back to all configured sources",
+                    ),
+                )
+                for source_name in config.sources
+            },
+        )
 
-    union = set(matched_sources)
-    union.update(dbt_matches)
-    return tuple(source_name for source_name in config.sources if source_name in union)
+    selected_sources = tuple(
+        source_name for source_name in config.sources if source_name in merged_reasons
+    )
+    return SourceSelectionReport(
+        mode="targeted_sources",
+        confidence=_selection_confidence(merged_reasons),
+        runner_source_names=selected_sources,
+        selected_sources=selected_sources,
+        changed_files=candidate_files,
+        targets_path=resolved_targets_path,
+        reasons_by_source=merged_reasons,
+    )
 
 
 def load_dbt_downstream_models(
@@ -285,6 +418,34 @@ def _match_source_names(
     return tuple(source_name for source_name in available_source_names if source_name in matched)
 
 
+def _match_path_selection_reasons(
+    *,
+    changed_files: tuple[str, ...],
+    targets_config: TargetsConfig,
+    available_source_names: tuple[str, ...],
+) -> dict[str, tuple[SourceSelectionReason, ...]]:
+    reasons: dict[str, set[SourceSelectionReason]] = {}
+    available = set(available_source_names)
+    for pattern, source_names in targets_config.paths.items():
+        matched_files = tuple(
+            sorted(changed_file for changed_file in changed_files if _path_matches_pattern(changed_file, pattern))
+        )
+        if not matched_files:
+            continue
+        for source_name in source_names:
+            if source_name not in available:
+                continue
+            reasons.setdefault(source_name, set()).add(
+                SourceSelectionReason(
+                    code="matched_path_rule",
+                    confidence="high",
+                    matched_files=matched_files,
+                    detail=f"path rule {pattern}",
+                )
+            )
+    return _freeze_selection_reasons(reasons, available_source_names)
+
+
 def _match_dbt_source_names(
     *,
     changed_files: tuple[str, ...],
@@ -309,6 +470,100 @@ def _match_dbt_source_names(
     if not matched:
         return ()
     return tuple(source_name for source_name in config.sources if source_name in matched)
+
+
+def _match_dbt_selection_reasons(
+    *,
+    changed_files: tuple[str, ...],
+    manifest_path: Path,
+    config: ProjectConfig,
+) -> dict[str, tuple[SourceSelectionReason, ...]]:
+    manifest = _load_dbt_manifest(manifest_path)
+    reasons: dict[str, set[SourceSelectionReason]] = {}
+    available_source_names = tuple(config.sources)
+    verixa_source_lookup = _build_verixa_source_lookup(config)
+    direct_matches = _direct_dbt_node_matches(changed_files, manifest)
+    changed_macro_ids = {
+        unique_id for unique_id in direct_matches if unique_id.startswith("macro.")
+    }
+
+    nodes_by_id = {
+        **manifest["nodes"],
+        **manifest["sources"],
+        **manifest["macros"],
+    }
+    for unique_id, matched_files in direct_matches.items():
+        if unique_id.startswith("macro."):
+            continue
+        node = nodes_by_id.get(unique_id)
+        if not isinstance(node, dict):
+            continue
+        if unique_id.startswith("source."):
+            for source_name in _source_names_for_dbt_source_node(node, verixa_source_lookup):
+                reasons.setdefault(source_name, set()).add(
+                    SourceSelectionReason(
+                        code="matched_dbt_source_definition",
+                        confidence="high",
+                        matched_files=matched_files,
+                        detail=_dbt_source_label(unique_id, node),
+                    )
+                )
+            continue
+
+        reason_code, confidence = _reason_for_dbt_node(node)
+        if reason_code is None:
+            continue
+        for source_name in _source_names_for_upstream_source_ids(
+            _collect_upstream_source_ids(unique_id, manifest),
+            manifest,
+            verixa_source_lookup,
+        ):
+            reasons.setdefault(source_name, set()).add(
+                SourceSelectionReason(
+                    code=reason_code,
+                    confidence=confidence,
+                    matched_files=matched_files,
+                    detail=_dbt_node_label(unique_id, node),
+                )
+            )
+
+    if changed_macro_ids:
+        for unique_id, node in manifest["nodes"].items():
+            depends_on = node.get("depends_on", {})
+            macro_ids = tuple(
+                macro_id
+                for macro_id in depends_on.get("macros", ())
+                if isinstance(macro_id, str) and macro_id in changed_macro_ids
+            )
+            if not macro_ids:
+                continue
+            matched_files = tuple(
+                sorted(
+                    {
+                        path
+                        for macro_id in macro_ids
+                        for path in direct_matches.get(macro_id, ())
+                    }
+                )
+            )
+            detail = ", ".join(
+                sorted(_dbt_node_label(macro_id, nodes_by_id.get(macro_id, {})) for macro_id in macro_ids)
+            )
+            for source_name in _source_names_for_upstream_source_ids(
+                _collect_upstream_source_ids(unique_id, manifest),
+                manifest,
+                verixa_source_lookup,
+            ):
+                reasons.setdefault(source_name, set()).add(
+                    SourceSelectionReason(
+                        code="matched_dbt_macro_dependency",
+                        confidence="medium",
+                        matched_files=matched_files,
+                        detail=detail,
+                    )
+                )
+
+    return _freeze_selection_reasons(reasons, available_source_names)
 
 
 def _map_dbt_downstream_models(
@@ -397,18 +652,7 @@ def _changed_dbt_node_ids(
     changed_files: tuple[str, ...],
     manifest: dict[str, Any],
 ) -> set[str]:
-    changed = set(changed_files)
-    nodes_by_id = {
-        **manifest["nodes"],
-        **manifest["sources"],
-        **manifest["macros"],
-    }
-
-    changed_node_ids = {
-        unique_id
-        for unique_id, node in nodes_by_id.items()
-        if _dbt_node_matches_changed_files(node, changed)
-    }
+    changed_node_ids = set(_direct_dbt_node_matches(changed_files, manifest))
 
     changed_macro_ids = {
         unique_id
@@ -426,9 +670,30 @@ def _changed_dbt_node_ids(
     return changed_node_ids
 
 
+def _direct_dbt_node_matches(
+    changed_files: tuple[str, ...],
+    manifest: dict[str, Any],
+) -> dict[str, tuple[str, ...]]:
+    changed = set(changed_files)
+    nodes_by_id = {
+        **manifest["nodes"],
+        **manifest["sources"],
+        **manifest["macros"],
+    }
+    return {
+        unique_id: matched_files
+        for unique_id, node in nodes_by_id.items()
+        if (matched_files := _dbt_node_matched_files(node, changed))
+    }
+
+
 def _dbt_node_matches_changed_files(node: Any, changed_files: set[str]) -> bool:
+    return bool(_dbt_node_matched_files(node, changed_files))
+
+
+def _dbt_node_matched_files(node: Any, changed_files: set[str]) -> tuple[str, ...]:
     if not isinstance(node, dict):
-        return False
+        return ()
 
     candidate_paths = {
         _normalize_optional_path(node.get("original_file_path")),
@@ -436,7 +701,8 @@ def _dbt_node_matches_changed_files(node: Any, changed_files: set[str]) -> bool:
         _normalize_optional_path(node.get("patch_path")),
     }
     candidate_paths.discard(None)
-    return any(path in changed_files for path in candidate_paths)
+    matched = sorted(path for path in candidate_paths if path in changed_files)
+    return tuple(matched)
 
 
 def _build_verixa_source_lookup(config: ProjectConfig) -> dict[str, tuple[str, ...]]:
@@ -490,6 +756,34 @@ def _dbt_model_name(unique_id: str, node: dict[str, Any]) -> str:
     return unique_id
 
 
+def _dbt_node_label(unique_id: str, node: dict[str, Any]) -> str:
+    if not isinstance(node, dict):
+        return unique_id
+    name = node.get("name")
+    if isinstance(name, str) and name.strip():
+        return name.strip()
+    return unique_id
+
+
+def _dbt_source_label(unique_id: str, node: dict[str, Any]) -> str:
+    source_name = node.get("source_name")
+    name = node.get("name")
+    if isinstance(source_name, str) and source_name.strip() and isinstance(name, str) and name.strip():
+        return f"{source_name.strip()}.{name.strip()}"
+    return _dbt_node_label(unique_id, node)
+
+
+def _reason_for_dbt_node(
+    node: dict[str, Any],
+) -> tuple[SelectionReasonCode | None, SelectionConfidence]:
+    resource_type = node.get("resource_type")
+    if resource_type == "model":
+        return "matched_dbt_model_dependency", "high"
+    if resource_type == "seed":
+        return "matched_dbt_seed_dependency", "medium"
+    return None, "medium"
+
+
 def _dbt_source_metadata(node: dict[str, Any]) -> DbtSourceMetadata | None:
     meta = _extract_dbt_meta(node)
     verixa_meta = meta.get("verixa")
@@ -539,6 +833,89 @@ def _collect_upstream_source_ids(
 
     _walk(node_id)
     return tuple(sorted(source_ids))
+
+
+def _source_names_for_upstream_source_ids(
+    source_ids: tuple[str, ...],
+    manifest: dict[str, Any],
+    verixa_source_lookup: dict[str, tuple[str, ...]],
+) -> tuple[str, ...]:
+    matched: set[str] = set()
+    for source_id in source_ids:
+        source_node = manifest["sources"].get(source_id)
+        if not isinstance(source_node, dict):
+            continue
+        for table_key in _dbt_source_table_keys(source_node):
+            matched.update(verixa_source_lookup.get(table_key, ()))
+    return tuple(sorted(matched))
+
+
+def _source_names_for_dbt_source_node(
+    node: dict[str, Any],
+    verixa_source_lookup: dict[str, tuple[str, ...]],
+) -> tuple[str, ...]:
+    matched: set[str] = set()
+    for table_key in _dbt_source_table_keys(node):
+        matched.update(verixa_source_lookup.get(table_key, ()))
+    return tuple(sorted(matched))
+
+
+def _merge_selection_reasons(
+    *reason_maps: dict[str, tuple[SourceSelectionReason, ...]],
+) -> dict[str, tuple[SourceSelectionReason, ...]]:
+    merged: dict[str, set[SourceSelectionReason]] = {}
+    for reason_map in reason_maps:
+        for source_name, reasons in reason_map.items():
+            merged.setdefault(source_name, set()).update(reasons)
+    return {
+        source_name: tuple(
+            sorted(
+                reasons,
+                key=lambda reason: (
+                    reason.code,
+                    reason.detail or "",
+                    reason.matched_files,
+                ),
+            )
+        )
+        for source_name, reasons in sorted(merged.items())
+        if reasons
+    }
+
+
+def _freeze_selection_reasons(
+    reasons: dict[str, set[SourceSelectionReason]],
+    available_source_names: tuple[str, ...],
+) -> dict[str, tuple[SourceSelectionReason, ...]]:
+    return {
+        source_name: tuple(
+            sorted(
+                reasons[source_name],
+                key=lambda reason: (
+                    reason.code,
+                    reason.detail or "",
+                    reason.matched_files,
+                ),
+            )
+        )
+        for source_name in available_source_names
+        if source_name in reasons and reasons[source_name]
+    }
+
+
+def _selection_confidence(
+    reasons_by_source: dict[str, tuple[SourceSelectionReason, ...]],
+) -> SelectionConfidence:
+    confidences = {
+        reason.confidence
+        for reasons in reasons_by_source.values()
+        for reason in reasons
+    }
+    if "low" in confidences:
+        return "low"
+    if "medium" in confidences:
+        return "medium"
+    return "high"
 
 
 def _normalize_optional_path(value: Any) -> str | None:

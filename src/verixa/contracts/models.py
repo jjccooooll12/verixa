@@ -3,9 +3,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal, TypeAlias
+from typing import TYPE_CHECKING, Literal, TypeAlias
 
 from verixa.contracts.normalize import is_numeric_type
+
+if TYPE_CHECKING:
+    from verixa.extensions.api import (
+        CustomCheckHook,
+        FindingEnricherHook,
+        SourceMetadataEnricherHook,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,6 +144,15 @@ class CheckConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class ExtensionsConfig:
+    """Typed extension hooks loaded from configuration."""
+
+    checks: tuple["CustomCheckHook", ...] = ()
+    finding_enrichers: tuple["FindingEnricherHook", ...] = ()
+    source_metadata_enrichers: tuple["SourceMetadataEnricherHook", ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class SourceContract:
     """A single logical source declaration."""
 
@@ -198,3 +214,4 @@ class ProjectConfig:
     rules: RulesConfig = field(default_factory=RulesConfig)
     baseline: BaselineConfig = field(default_factory=BaselineConfig)
     check: CheckConfig = field(default_factory=CheckConfig)
+    extensions: ExtensionsConfig = field(default_factory=ExtensionsConfig)

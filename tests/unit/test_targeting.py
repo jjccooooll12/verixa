@@ -9,11 +9,13 @@ import pytest
 from verixa.config.errors import ConfigError
 from verixa.contracts.models import ProjectConfig, SourceContract, WarehouseConfig
 from verixa.targeting import (
+    SourceSelectionReport,
     load_dbt_source_metadata,
     load_dbt_downstream_models,
     load_targets_config,
     list_changed_files_against,
     resolve_source_names,
+    resolve_source_selection,
 )
 
 
@@ -312,6 +314,107 @@ dbt:
     )
 
     assert resolved == ("stripe.transactions",)
+
+
+def test_resolve_source_selection_includes_reason_codes_and_confidence(tmp_path: Path) -> None:
+    manifest_path = tmp_path / "target" / "manifest.json"
+    manifest_path.parent.mkdir()
+    manifest_path.write_text(
+        """
+{
+  "nodes": {
+    "model.demo.stg_orders": {
+      "resource_type": "model",
+      "original_file_path": "models/staging/orders.sql",
+      "patch_path": "models/staging/schema.yml",
+      "depends_on": {
+        "nodes": ["source.demo.raw.stripe_transactions"],
+        "macros": ["macro.demo.currency_cleanup"]
+      }
+    }
+  },
+  "sources": {
+    "source.demo.raw.stripe_transactions": {
+      "source_name": "raw",
+      "database": "demo",
+      "schema": "raw",
+      "identifier": "stripe_transactions",
+      "name": "stripe_transactions",
+      "original_file_path": "models/sources/stripe.yml",
+      "depends_on": {
+        "nodes": []
+      }
+    }
+  },
+  "macros": {
+    "macro.demo.currency_cleanup": {
+      "resource_type": "macro",
+      "name": "currency_cleanup",
+      "original_file_path": "macros/currency_cleanup.sql"
+    }
+  }
+}
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    targets_path = tmp_path / "verixa.targets.yaml"
+    targets_path.write_text(
+        """
+paths:
+  models/staging/**:
+    - stripe.transactions
+dbt:
+  manifest_path: target/manifest.json
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    selection = resolve_source_selection(
+        tmp_path / "verixa.yaml",
+        changed_files=("models/staging/schema.yml", "macros/currency_cleanup.sql"),
+        targets_path=targets_path,
+        config_loader=lambda path: _project_config(),
+    )
+
+    assert isinstance(selection, SourceSelectionReport)
+    assert selection.mode == "targeted_sources"
+    assert selection.confidence == "medium"
+    assert selection.runner_source_names == ("stripe.transactions",)
+    assert selection.selected_sources == ("stripe.transactions",)
+    reasons = selection.reasons_by_source["stripe.transactions"]
+    assert {reason.code for reason in reasons} == {
+        "matched_path_rule",
+        "matched_dbt_model_dependency",
+        "matched_dbt_macro_dependency",
+    }
+
+
+def test_resolve_source_selection_reports_fallback_all_sources(tmp_path: Path) -> None:
+    targets_path = tmp_path / "verixa.targets.yaml"
+    targets_path.write_text(
+        """
+paths:
+  models/staging/stripe/**/*.sql:
+    - stripe.transactions
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    selection = resolve_source_selection(
+        tmp_path / "verixa.yaml",
+        changed_files=("docs/readme.md",),
+        targets_path=targets_path,
+        config_loader=lambda path: _project_config(),
+    )
+
+    assert selection.mode == "fallback_all_sources"
+    assert selection.confidence == "low"
+    assert selection.runner_source_names == ()
+    assert selection.selected_sources == ("stripe.transactions", "stripe.customers")
+    assert selection.reasons_by_source["stripe.transactions"][0].code == "fallback_all_sources"
 
 
 def test_load_dbt_downstream_models_maps_sources_to_models(tmp_path: Path) -> None:

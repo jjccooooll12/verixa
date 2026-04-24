@@ -6,6 +6,7 @@ from tests.cli.support import build_app
 from verixa.cli.cost import CostReport
 from verixa.cli.status import StatusReport
 from verixa.diff.models import DiffResult, Finding
+from verixa.targeting import SourceSelectionReason, SourceSelectionReport
 
 
 def test_diff_command_uses_diff_title() -> None:
@@ -295,7 +296,12 @@ def test_diff_command_renders_policy_v1() -> None:
             ),
             sources_checked=1,
             used_baseline=True,
-        )
+        ),
+        run_cost=lambda config, command, source_names=(), execution_mode="bounded", mode="history": CostReport(
+            command="diff",
+            mode="history",
+            query_tag="verixa:diff",
+        ),
     )
 
     result = runner.invoke(app, ["diff", "--format", "policy-v1"])
@@ -303,6 +309,31 @@ def test_diff_command_renders_policy_v1() -> None:
     assert result.exit_code == 0
     assert '"schema_version": "verixa.policy.v1"' in result.stdout
     assert '"schema_version": "verixa.finding.v2"' in result.stdout
+
+
+def test_diff_command_json_includes_runtime_impact() -> None:
+    runner = CliRunner()
+    app = build_app(
+        run_diff=lambda config, risk_path=None, source_names=(), environment=None, max_bytes_billed=None: DiffResult(
+            findings=(),
+            sources_checked=1,
+            used_baseline=True,
+        ),
+        run_cost=lambda config, command, source_names=(), execution_mode="bounded", mode="history": CostReport(
+            command="diff",
+            mode="history",
+            query_tag="verixa:diff",
+            usage_records=(),
+            history_window_seconds=3600,
+        ),
+    )
+
+    result = runner.invoke(app, ["diff", "--format", "json"])
+
+    assert result.exit_code == 0
+    assert '"warehouse_impact"' in result.stdout
+    assert '"mode": "actual"' in result.stdout
+    assert '"warehouse_kind": "snowflake"' in result.stdout
 
 
 def test_diff_command_renders_github_markdown() -> None:
@@ -412,6 +443,30 @@ def test_cost_command_passes_execution_mode() -> None:
     assert seen["execution_mode"] == "cheap"
 
 
+def test_cost_command_reports_budget_selection() -> None:
+    runner = CliRunner()
+    app = build_app(
+        run_cost=lambda config, command, source_names=(), max_bytes_billed=None, budget_bytes=None, history_window_seconds=None, execution_mode="bounded": CostReport(
+            command="diff",
+            mode="estimate",
+            estimates={
+                "stripe.transactions": 1024,
+                "stripe.payouts": 2048,
+            },
+            budget_bytes=budget_bytes,
+            selected_sources=("stripe.transactions",),
+            skipped_sources=("stripe.payouts",),
+        )
+    )
+
+    result = runner.invoke(app, ["cost", "diff", "--format", "json", "--budget-bytes", "1500B"])
+
+    assert result.exit_code == 0
+    assert '"budget_bytes": 1500' in result.stdout
+    assert '"selected_sources": [' in result.stdout
+    assert '"skipped_sources": [' in result.stdout
+
+
 def test_diff_command_can_target_sources_from_changed_files() -> None:
     runner = CliRunner()
     seen: dict[str, object] = {}
@@ -448,6 +503,44 @@ def test_diff_command_can_target_sources_from_changed_files() -> None:
     assert str(seen["targets_path"]) == "verixa.targets.yaml"
     assert seen["resolved_source_names"] == ("stripe.transactions",)
     assert seen["environment"] is None
+
+
+def test_diff_command_json_includes_source_selection() -> None:
+    runner = CliRunner()
+    app = build_app(
+        resolve_source_selection=lambda *args, **kwargs: SourceSelectionReport(
+            mode="targeted_sources",
+            confidence="high",
+            runner_source_names=("stripe.transactions",),
+            selected_sources=("stripe.transactions",),
+            changed_files=("models/staging/orders.sql",),
+            reasons_by_source={
+                "stripe.transactions": (
+                    SourceSelectionReason(
+                        code="matched_dbt_model_dependency",
+                        confidence="high",
+                        matched_files=("models/staging/orders.sql",),
+                    ),
+                )
+            },
+        ),
+        run_diff=lambda config, risk_path=None, source_names=(), environment=None, max_bytes_billed=None: DiffResult(
+            findings=(),
+            sources_checked=1,
+            used_baseline=True,
+        ),
+        run_cost=lambda config, command, source_names=(), execution_mode="bounded", mode="history": CostReport(
+            command="diff",
+            mode="history",
+            query_tag="verixa:diff",
+        ),
+    )
+
+    result = runner.invoke(app, ["diff", "--changed-file", "models/staging/orders.sql", "--format", "json"])
+
+    assert result.exit_code == 0
+    assert '"source_selection"' in result.stdout
+    assert '"matched_dbt_model_dependency"' in result.stdout
 
 
 def test_diff_command_passes_environment() -> None:

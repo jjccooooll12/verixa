@@ -9,7 +9,8 @@ from typing import Any
 import yaml
 
 from verixa.config.errors import ConfigError
-from verixa.contracts.models import ProjectConfig
+from verixa.contracts.models import ExtensionsConfig, ProjectConfig
+from verixa.extensions.api import ExtensionError, SourceMetadataEnrichmentContext
 from verixa.targeting import load_dbt_downstream_models, load_dbt_source_metadata
 
 
@@ -103,44 +104,111 @@ def enrich_risk_config_with_dbt_impacts(
 
     downstream_models = load_dbt_downstream_models(config, targets_path=targets_path)
     source_metadata = load_dbt_source_metadata(config, targets_path=targets_path)
-    if not downstream_models and not source_metadata:
+    extension_metadata = _load_extension_source_metadata(config.extensions, config)
+    if not downstream_models and not source_metadata and not extension_metadata:
         return risk_config
 
     merged_sources: dict[str, SourceRiskHints] = {}
     existing_sources = {} if risk_config is None else risk_config.sources
-    for source_name in sorted(set(existing_sources) | set(downstream_models) | set(source_metadata)):
+    for source_name in sorted(
+        set(existing_sources) | set(downstream_models) | set(source_metadata) | set(extension_metadata)
+    ):
         existing = existing_sources.get(source_name)
         derived_models = downstream_models.get(source_name, ())
         derived_metadata = source_metadata.get(source_name)
+        extension_hints = extension_metadata.get(source_name)
+        merged_general = () if extension_hints is None else extension_hints.general
+        merged_columns = {} if extension_hints is None else extension_hints.columns
+        merged_owners = () if extension_hints is None else extension_hints.owners
+        merged_criticality = None if extension_hints is None else extension_hints.criticality
+        merged_downstream_models = () if extension_hints is None else extension_hints.downstream_models
         if existing is None:
             merged_sources[source_name] = SourceRiskHints(
-                general=(),
-                columns={},
-                owners=() if derived_metadata is None else derived_metadata.owners,
-                criticality=None if derived_metadata is None else derived_metadata.criticality,
-                downstream_models=derived_models,
+                general=merged_general,
+                columns=merged_columns,
+                owners=tuple(dict.fromkeys((*merged_owners, *( () if derived_metadata is None else derived_metadata.owners )))),
+                criticality=merged_criticality
+                if merged_criticality is not None
+                else None if derived_metadata is None else derived_metadata.criticality,
+                downstream_models=tuple(dict.fromkeys((*merged_downstream_models, *derived_models))),
             )
             continue
         merged_sources[source_name] = SourceRiskHints(
-            general=existing.general,
-            columns=existing.columns,
+            general=tuple(dict.fromkeys((*existing.general, *merged_general))),
+            columns=_merge_column_hints(existing.columns, merged_columns),
             owners=tuple(
                 dict.fromkeys(
                     (
                         *existing.owners,
+                        *merged_owners,
                         *( () if derived_metadata is None else derived_metadata.owners ),
                     )
                 )
             ),
             criticality=existing.criticality
             if existing.criticality is not None
+            else merged_criticality
+            if merged_criticality is not None
             else None if derived_metadata is None else derived_metadata.criticality,
             downstream_models=tuple(
-                dict.fromkeys((*existing.downstream_models, *derived_models))
+                dict.fromkeys((*existing.downstream_models, *merged_downstream_models, *derived_models))
             ),
         )
 
     return RiskConfig(sources=merged_sources)
+
+
+def _load_extension_source_metadata(
+    extensions: ExtensionsConfig,
+    config: ProjectConfig,
+) -> dict[str, SourceRiskHints]:
+    if not extensions.source_metadata_enrichers:
+        return {}
+
+    merged: dict[str, SourceRiskHints] = {}
+    context = SourceMetadataEnrichmentContext(config=config)
+    for hook in extensions.source_metadata_enrichers:
+        try:
+            hints = hook(context)
+        except Exception as exc:  # pragma: no cover - hook-specific failures are environment specific
+            raise ExtensionError(
+                f"Source metadata enricher hook '{_hook_name(hook)}' failed: {exc}"
+            ) from exc
+        if not isinstance(hints, dict):
+            raise ExtensionError(
+                f"Source metadata enricher hook '{_hook_name(hook)}' must return a dict[str, SourceRiskHints]."
+            )
+        for source_name, hint in hints.items():
+            if source_name not in config.sources:
+                continue
+            if not isinstance(hint, SourceRiskHints):
+                raise ExtensionError(
+                    f"Source metadata enricher hook '{_hook_name(hook)}' returned a non-SourceRiskHints value for '{source_name}'."
+                )
+            existing = merged.get(source_name)
+            if existing is None:
+                merged[source_name] = hint
+                continue
+            merged[source_name] = SourceRiskHints(
+                general=tuple(dict.fromkeys((*existing.general, *hint.general))),
+                columns=_merge_column_hints(existing.columns, hint.columns),
+                owners=tuple(dict.fromkeys((*existing.owners, *hint.owners))),
+                criticality=existing.criticality or hint.criticality,
+                downstream_models=tuple(
+                    dict.fromkeys((*existing.downstream_models, *hint.downstream_models))
+                ),
+            )
+    return merged
+
+
+def _merge_column_hints(
+    existing: dict[str, tuple[str, ...]],
+    additional: dict[str, tuple[str, ...]],
+) -> dict[str, tuple[str, ...]]:
+    merged = {column_name: values for column_name, values in existing.items()}
+    for column_name, values in additional.items():
+        merged[column_name] = tuple(dict.fromkeys((*merged.get(column_name, ()), *values)))
+    return merged
 
 
 def _parse_risk_list(
@@ -194,3 +262,10 @@ def _parse_optional_criticality(raw_value: Any, source_name: str) -> str | None:
             f"Risk config for source '{source_name}' criticality must be one of: low, medium, high."
         )
     return raw_value
+
+
+def _hook_name(hook: object) -> str:
+    hook_type = type(hook)
+    module = getattr(hook, "__module__", hook_type.__module__)
+    qualname = getattr(hook, "__qualname__", hook_type.__qualname__)
+    return f"{module}.{qualname}"

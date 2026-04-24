@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import pytest
+
 from verixa.contracts.models import (
     BaselineConfig,
     CheckConfig,
+    ExtensionsConfig,
     HistoryDriftConfig,
     ProjectConfig,
     RowCountChangeThresholds,
@@ -13,8 +16,9 @@ from verixa.contracts.models import (
     SourceContract,
     WarehouseConfig,
 )
-from verixa.diff.engine import build_plan_result
+from verixa.diff.engine import build_plan_result, build_test_result
 from verixa.diff.risk import RiskConfig, SourceRiskHints
+from verixa.extensions.api import ExtensionError
 from verixa.findings.schema import normalize_diff_result
 from verixa.snapshot.models import ProjectSnapshot
 from tests.unit.test_support import make_numeric_summary_snapshot, make_source_snapshot
@@ -417,3 +421,120 @@ def test_build_plan_result_skips_row_count_drift_in_backfill_mode() -> None:
         finding.code in {"row_count_changed", "row_count_history_band"}
         for finding in result.findings
     )
+
+
+def test_build_test_result_runs_custom_checks_and_enrichers() -> None:
+    from tests.unit.extensions_demo import custom_check, finding_enricher
+
+    contract = SourceContract(
+        name="stripe.transactions",
+        table="raw.stripe_transactions",
+        schema={"amount": "FLOAT64"},
+        freshness=None,
+        tests=(),
+    )
+    config = ProjectConfig(
+        warehouse=WarehouseConfig(kind="bigquery", project="demo"),
+        sources={"stripe.transactions": contract},
+        extensions=ExtensionsConfig(
+            checks=(custom_check,),
+            finding_enrichers=(finding_enricher,),
+        ),
+    )
+    current = ProjectSnapshot(
+        warehouse_kind="bigquery",
+        generated_at=datetime(2026, 4, 22, 12, 0, tzinfo=timezone.utc),
+        sources={"stripe.transactions": make_source_snapshot(row_count=42)},
+    )
+
+    result = build_test_result(config, current, execution_mode="cheap")
+
+    finding = next(finding for finding in result.findings if finding.code == "custom_demo_check")
+    assert finding.message == "custom demo check saw 42 rows"
+    assert finding.risks == ("enriched:cheap",)
+
+
+def test_build_plan_result_runs_custom_checks_when_baseline_missing_for_source() -> None:
+    from tests.unit.extensions_demo import custom_check
+
+    contract = SourceContract(
+        name="stripe.transactions",
+        table="raw.stripe_transactions",
+        schema={"amount": "FLOAT64"},
+        freshness=None,
+        tests=(),
+    )
+    config = ProjectConfig(
+        warehouse=WarehouseConfig(kind="bigquery", project="demo"),
+        sources={"stripe.transactions": contract},
+        extensions=ExtensionsConfig(checks=(custom_check,)),
+    )
+    baseline = ProjectSnapshot(
+        warehouse_kind="bigquery",
+        generated_at=datetime(2026, 4, 22, 11, 0, tzinfo=timezone.utc),
+        sources={},
+    )
+    current = ProjectSnapshot(
+        warehouse_kind="bigquery",
+        generated_at=datetime(2026, 4, 22, 12, 0, tzinfo=timezone.utc),
+        sources={"stripe.transactions": make_source_snapshot(row_count=42)},
+    )
+
+    result = build_plan_result(config, baseline, current)
+
+    assert any(finding.code == "baseline_missing_for_source" for finding in result.findings)
+    assert any(finding.code == "custom_demo_check" for finding in result.findings)
+
+
+def test_build_test_result_raises_extension_error_for_invalid_custom_check_return() -> None:
+    from tests.unit.extensions_demo import invalid_custom_check
+
+    contract = SourceContract(
+        name="stripe.transactions",
+        table="raw.stripe_transactions",
+        schema={"amount": "FLOAT64"},
+        freshness=None,
+        tests=(),
+    )
+    config = ProjectConfig(
+        warehouse=WarehouseConfig(kind="bigquery", project="demo"),
+        sources={"stripe.transactions": contract},
+        extensions=ExtensionsConfig(checks=(invalid_custom_check,)),
+    )
+    current = ProjectSnapshot(
+        warehouse_kind="bigquery",
+        generated_at=datetime(2026, 4, 22, 12, 0, tzinfo=timezone.utc),
+        sources={"stripe.transactions": make_source_snapshot(row_count=1)},
+    )
+
+    with pytest.raises(ExtensionError, match="returned a non-Finding value"):
+        build_test_result(config, current)
+
+
+def test_build_test_result_raises_extension_error_for_invalid_finding_enricher_return() -> None:
+    from tests.unit.extensions_demo import invalid_finding_enricher
+
+    contract = SourceContract(
+        name="stripe.transactions",
+        table="raw.stripe_transactions",
+        schema={"amount": "FLOAT64"},
+        freshness=None,
+        tests=(),
+    )
+    config = ProjectConfig(
+        warehouse=WarehouseConfig(kind="bigquery", project="demo"),
+        sources={"stripe.transactions": contract},
+        extensions=ExtensionsConfig(finding_enrichers=(invalid_finding_enricher,)),
+    )
+    current = ProjectSnapshot(
+        warehouse_kind="bigquery",
+        generated_at=datetime(2026, 4, 22, 12, 0, tzinfo=timezone.utc),
+        sources={
+            "stripe.transactions": make_source_snapshot(
+                null_rates={"amount": 0.1, "currency": 0.0}
+            )
+        },
+    )
+
+    with pytest.raises(ExtensionError, match="must return a Finding"):
+        build_test_result(config, current)

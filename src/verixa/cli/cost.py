@@ -46,6 +46,9 @@ class CostReport:
     max_bytes_billed: int | None = None
     query_tag: str | None = None
     history_window_seconds: int | None = None
+    budget_bytes: int | None = None
+    selected_sources: tuple[str, ...] = ()
+    skipped_sources: tuple[str, ...] = ()
 
     @property
     def total_bytes(self) -> int:
@@ -80,6 +83,7 @@ def run_cost(
     max_bytes_billed: int | None = None,
     history_window_seconds: int | None = None,
     execution_mode: str = "bounded",
+    budget_bytes: int | None = None,
     mode: Literal["auto", "estimate", "history"] = "auto",
     config_loader: ConfigLoader = load_config,
     connector_factory: ConnectorFactory = create_connector,
@@ -114,6 +118,9 @@ def run_cost(
             estimates=estimates,
             max_bytes_billed=effective_max_bytes_billed,
             query_tag=command_spec.query_tag,
+            budget_bytes=budget_bytes,
+            selected_sources=_selected_sources_for_budget(estimates, budget_bytes),
+            skipped_sources=_skipped_sources_for_budget(estimates, budget_bytes),
         )
 
     if config.warehouse.kind != "snowflake":
@@ -121,6 +128,8 @@ def run_cost(
 
     if mode == "estimate":
         raise ConnectorError("--estimate-bytes is currently supported only for BigQuery.")
+    if budget_bytes is not None:
+        raise ConnectorError("Budget-aware source selection is currently supported only for BigQuery estimates.")
     if not hasattr(connector, "report_query_usage"):
         raise ConnectorError("Snowflake cost reporting requires the Snowflake connector.")
 
@@ -166,3 +175,35 @@ def _estimate_bytes(
             execution_mode=execution_mode,
         )
     return service.estimate_bytes(config, mode=mode)
+
+
+def _selected_sources_for_budget(
+    estimates: dict[str, int],
+    budget_bytes: int | None,
+) -> tuple[str, ...]:
+    if budget_bytes is None:
+        return ()
+
+    total = 0
+    selected: list[str] = []
+    for source_name, estimated_bytes in sorted(estimates.items(), key=lambda item: (item[1], item[0])):
+        if total + estimated_bytes > budget_bytes:
+            continue
+        selected.append(source_name)
+        total += estimated_bytes
+    return tuple(selected)
+
+
+def _skipped_sources_for_budget(
+    estimates: dict[str, int],
+    budget_bytes: int | None,
+) -> tuple[str, ...]:
+    if budget_bytes is None:
+        return ()
+
+    selected = set(_selected_sources_for_budget(estimates, budget_bytes))
+    return tuple(
+        source_name
+        for source_name, _ in sorted(estimates.items(), key=lambda item: (item[1], item[0]))
+        if source_name not in selected
+    )

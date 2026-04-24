@@ -8,13 +8,17 @@ from pathlib import Path
 from verixa.diff.models import DiffResult
 from verixa.findings.schema import NormalizedFinding, normalize_diff_result
 from verixa.history.classifier import LifecycleReport, classify_finding_lifecycle
+from verixa.runtime_impact import RuntimeImpact
 from verixa.snapshot.models import ProjectSnapshot
+from verixa.targeting import SourceSelectionReport
 
 
 def render_snapshot_summary(
     snapshot: ProjectSnapshot,
     path: Path,
     estimated_bytes_by_source: dict[str, int] | None = None,
+    source_selection: SourceSelectionReport | None = None,
+    runtime_impact: RuntimeImpact | None = None,
 ) -> str:
     """Render a concise snapshot capture summary."""
 
@@ -30,6 +34,10 @@ def render_snapshot_summary(
         )
     if estimated_bytes_by_source is not None:
         lines.append(f"Estimated scan: {_format_total_bytes(estimated_bytes_by_source)}")
+    if source_selection is not None:
+        lines.append(_render_source_selection_line(source_selection))
+    if runtime_impact is not None:
+        lines.append(_render_runtime_impact_line(runtime_impact))
     return "\n".join(lines)
 
 
@@ -38,6 +46,8 @@ def render_diff_result(
     title: str,
     estimated_bytes_by_source: dict[str, int] | None = None,
     lifecycle_report: LifecycleReport | None = None,
+    source_selection: SourceSelectionReport | None = None,
+    runtime_impact: RuntimeImpact | None = None,
 ) -> str:
     """Render grouped findings with a summary."""
 
@@ -50,6 +60,10 @@ def render_diff_result(
         lines = [f"No {title.lower()} findings across {result.sources_checked} source(s)."]
         if estimated_bytes_by_source is not None:
             lines.append(f"Estimated scan: {_format_total_bytes(estimated_bytes_by_source)}")
+        if source_selection is not None:
+            lines.append(_render_source_selection_line(source_selection))
+        if runtime_impact is not None:
+            lines.append(_render_runtime_impact_line(runtime_impact))
         return "\n".join(lines)
 
     lines: list[str] = []
@@ -86,6 +100,11 @@ def render_diff_result(
         )
     if estimated_bytes_by_source is not None:
         lines.append(f"Estimated scan: {_format_total_bytes(estimated_bytes_by_source)}")
+    if source_selection is not None:
+        lines.append(_render_source_selection_line(source_selection))
+        lines.extend(_render_source_selection_details(source_selection))
+    if runtime_impact is not None:
+        lines.append(_render_runtime_impact_line(runtime_impact))
     return "\n".join(lines).strip()
 
 
@@ -185,3 +204,55 @@ def _format_optional_number(value: float | None) -> str:
         return "n/a"
     formatted = f"{value:.4f}"
     return formatted.rstrip("0").rstrip(".")
+
+
+def _render_runtime_impact_line(runtime_impact: RuntimeImpact) -> str:
+    if runtime_impact.mode == "estimated":
+        return (
+            "Warehouse impact: estimated "
+            f"{_format_bytes(runtime_impact.estimated_total_bytes)} "
+            f"across {len(runtime_impact.estimated_bytes_by_source)} source(s)"
+        )
+    return (
+        "Warehouse impact: actual "
+        f"{runtime_impact.actual_query_count} query(s), "
+        f"{_format_bytes(runtime_impact.actual_total_bytes_scanned)} scanned, "
+        f"{_format_bytes(runtime_impact.actual_total_bytes_written)} written, "
+        f"{runtime_impact.actual_total_elapsed_ms}ms elapsed"
+    )
+
+
+def _render_source_selection_line(source_selection: SourceSelectionReport) -> str:
+    if source_selection.mode == "all_sources":
+        return "Target selection: all configured sources"
+    if source_selection.mode == "explicit_sources":
+        return "Target selection: explicit sources " + ", ".join(source_selection.selected_sources)
+    if source_selection.mode == "fallback_all_sources":
+        return (
+            "Target selection: fallback to all configured sources "
+            f"(confidence={source_selection.confidence})"
+        )
+    return (
+        "Target selection: targeted "
+        f"{len(source_selection.selected_sources)} source(s) "
+        f"(confidence={source_selection.confidence})"
+    )
+
+
+def _render_source_selection_details(source_selection: SourceSelectionReport) -> list[str]:
+    reasons_by_source = source_selection.reasons_by_source or {}
+    if not reasons_by_source:
+        return []
+
+    lines: list[str] = []
+    for source_name in source_selection.selected_sources:
+        reasons = reasons_by_source.get(source_name)
+        if not reasons:
+            continue
+        rendered = ", ".join(
+            reason.code
+            + (f"[{','.join(reason.matched_files)}]" if reason.matched_files else "")
+            for reason in reasons
+        )
+        lines.append(f"Selection detail: {source_name} <- {rendered}")
+    return lines

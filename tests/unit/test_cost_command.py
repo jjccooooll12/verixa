@@ -72,6 +72,14 @@ sources:
     table: raw.stripe_transactions
     schema:
       amount: float
+  stripe.customers:
+    table: raw.stripe_customers
+    schema:
+      amount: float
+  stripe.payouts:
+    table: raw.stripe_payouts
+    schema:
+      amount: float
 """.strip()
         + "\n",
         encoding="utf-8",
@@ -149,6 +157,44 @@ sources:
     assert created_services[0].execution_mode_seen == "cheap"
 
 
+def test_run_cost_builds_budget_aware_selection_for_bigquery(tmp_path: Path) -> None:
+    config_path = tmp_path / "verixa.yaml"
+    config_path.write_text(
+        """
+warehouse:
+  kind: bigquery
+  project: demo
+sources:
+  stripe.transactions:
+    table: raw.stripe_transactions
+    schema:
+      amount: float
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    class _BudgetService(_FakeSnapshotService):
+        def estimate_bytes(self, config, *, mode="snapshot") -> dict[str, int]:  # noqa: ANN001
+            self.mode_seen = mode
+            return {
+                "stripe.transactions": 1024,
+                "stripe.customers": 4096,
+                "stripe.payouts": 2048,
+            }
+
+    report = run_cost(
+        config_path,
+        command="diff",
+        budget_bytes=3000,
+        connector_factory=lambda warehouse, **kwargs: _FakeBigQueryConnector(warehouse, **kwargs),
+        snapshot_service_factory=_BudgetService,
+    )
+
+    assert report.selected_sources == ("stripe.transactions",)
+    assert report.skipped_sources == ("stripe.payouts", "stripe.customers")
+
+
 def test_run_cost_reports_recent_snowflake_usage(tmp_path: Path) -> None:
     config_path = tmp_path / "verixa.yaml"
     config_path.write_text(
@@ -217,5 +263,31 @@ sources:
             config_path,
             command="validate",
             mode="estimate",
+            connector_factory=lambda warehouse, **kwargs: _FakeSnowflakeConnector(warehouse, **kwargs),
+        )
+
+
+def test_run_cost_rejects_budget_selection_for_snowflake(tmp_path: Path) -> None:
+    config_path = tmp_path / "verixa.yaml"
+    config_path.write_text(
+        """
+warehouse:
+  kind: snowflake
+  connection_name: verixa
+sources:
+  stripe.transactions:
+    table: RAW.INGEST.ORDERS
+    schema:
+      amount: float
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConnectorError, match="supported only for BigQuery estimates"):
+        run_cost(
+            config_path,
+            command="diff",
+            budget_bytes=2048,
             connector_factory=lambda warehouse, **kwargs: _FakeSnowflakeConnector(warehouse, **kwargs),
         )

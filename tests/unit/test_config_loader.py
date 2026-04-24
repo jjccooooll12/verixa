@@ -518,6 +518,37 @@ sources:
     assert tuple(config.sources) == ("stripe.transactions",)
 
 
+def test_load_config_parses_extension_hooks(tmp_path: Path) -> None:
+    config_path = tmp_path / "verixa.yaml"
+    config_path.write_text(
+        """
+warehouse:
+  kind: bigquery
+  project: demo-project
+extensions:
+  checks:
+    - tests.unit.extensions_demo:custom_check
+  finding_enrichers:
+    - tests.unit.extensions_demo:finding_enricher
+  source_metadata_enrichers:
+    - tests.unit.extensions_demo:source_metadata_enricher
+sources:
+  stripe.transactions:
+    table: raw.stripe_transactions
+    schema:
+      amount: float
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert len(config.extensions.checks) == 1
+    assert len(config.extensions.finding_enrichers) == 1
+    assert len(config.extensions.source_metadata_enrichers) == 1
+
+
 def test_load_config_rejects_unknown_source_selection(tmp_path: Path) -> None:
     config_path = tmp_path / "verixa.yaml"
     config_path.write_text(

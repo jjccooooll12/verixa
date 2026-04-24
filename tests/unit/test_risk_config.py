@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from verixa.contracts.models import ProjectConfig, SourceContract, WarehouseConfig
+import pytest
+
+from verixa.contracts.models import ExtensionsConfig, ProjectConfig, SourceContract, WarehouseConfig
 from verixa.diff.risk import RiskConfig, SourceRiskHints, enrich_risk_config_with_dbt_impacts
+from verixa.extensions.api import ExtensionError
 
 
 def _project_config() -> ProjectConfig:
@@ -144,3 +147,78 @@ dbt:
     assert hints.owners == ("finance",)
     assert hints.criticality == "high"
     assert hints.downstream_models == ()
+
+
+def test_enrich_risk_config_with_extension_metadata_backfills_missing_values() -> None:
+    from tests.unit.extensions_demo import source_metadata_enricher
+
+    config = ProjectConfig(
+        warehouse=WarehouseConfig(kind="bigquery", project="demo"),
+        sources=_project_config().sources,
+        extensions=ExtensionsConfig(source_metadata_enrichers=(source_metadata_enricher,)),
+    )
+
+    enriched = enrich_risk_config_with_dbt_impacts(
+        None,
+        config=config,
+        targets_path=None,
+    )
+
+    assert enriched is not None
+    hints = enriched.sources["stripe.transactions"]
+    assert hints.general == ("extension-general-risk",)
+    assert hints.columns == {"amount": ("extension-column-risk",)}
+    assert hints.owners == ("extension-owner",)
+    assert hints.criticality == "medium"
+    assert hints.downstream_models == ("ext_model",)
+
+
+def test_enrich_risk_config_with_extension_metadata_does_not_override_explicit_criticality() -> None:
+    from tests.unit.extensions_demo import source_metadata_enricher
+
+    risk_config = RiskConfig(
+        sources={
+            "stripe.transactions": SourceRiskHints(
+                general=(),
+                columns={},
+                owners=("data-platform",),
+                criticality="high",
+                downstream_models=(),
+            )
+        }
+    )
+    config = ProjectConfig(
+        warehouse=WarehouseConfig(kind="bigquery", project="demo"),
+        sources=_project_config().sources,
+        extensions=ExtensionsConfig(source_metadata_enrichers=(source_metadata_enricher,)),
+    )
+
+    enriched = enrich_risk_config_with_dbt_impacts(
+        risk_config,
+        config=config,
+        targets_path=None,
+    )
+
+    assert enriched is not None
+    hints = enriched.sources["stripe.transactions"]
+    assert hints.owners == ("data-platform", "extension-owner")
+    assert hints.criticality == "high"
+
+
+def test_enrich_risk_config_raises_extension_error_for_invalid_source_metadata_hook() -> None:
+    from tests.unit.extensions_demo import invalid_source_metadata_enricher
+
+    config = ProjectConfig(
+        warehouse=WarehouseConfig(kind="bigquery", project="demo"),
+        sources=_project_config().sources,
+        extensions=ExtensionsConfig(
+            source_metadata_enrichers=(invalid_source_metadata_enricher,)
+        ),
+    )
+
+    with pytest.raises(ExtensionError, match="returned a non-SourceRiskHints value"):
+        enrich_risk_config_with_dbt_impacts(
+            None,
+            config=config,
+            targets_path=None,
+        )
